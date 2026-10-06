@@ -1,0 +1,4 @@
+{
+  "note": "内容更新后请重新拉取 data/index.json；其中的链接已固定到具体 commit，不受 CDN 缓存影响",
+  "hint": "若 index.json 无当���内容，加 ?t=timestamp 重试"
+}
