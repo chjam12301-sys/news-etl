@@ -1,6 +1,7 @@
 {
-  "ref": "e8ebc57",
-  "content_ref": "9b091ef",
-  "updated_at": "2026-10-06T15:54:47.028773+00:00",
-  "hint": "App 先拉本文件（加 ?t= 时间戳），再用 ref 拼后续 URL"
+ "ref": "1b29893",
+ "content_ref": "200de00",
+ "index_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@200de00/content/index.json",
+ "updated_at": "2026-10-06T15:56:00.393176+00:00",
+ "hint": "用 index_url 拉索引；其中 detail_url / audio.url 已固定 commit，可永久缓存"
 }
