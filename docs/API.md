@@ -1,12 +1,15 @@
 # 每日英语听力 · 内容 API 文档
 
-> **Base URL**
+> **Base URL**（首页用这个，必须加时间戳）
 > ```
 > https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@main/content
 > ```
 >
-> 全部数据与音频都在这个地址下，**无需服务器、无需鉴权**。
-> OpenAPI 规范见 `openapi-cdn.json`，可导入 Postman / Apifox 自动生成客户端。
+> 详情与音频**不要自己拼路径** —— 直接用 `index.json` 里返回的
+> `detail_url` 和 `audio.url`，它们已固定到具体 commit，不受 CDN 缓存影响。
+>
+> 全部数据在 CDN 上，**无需服务器、无需鉴权**。
+> OpenAPI 规范见 `openapi-cdn.json`，可导入 Postman / Apifox 生成客户端。
 
 ---
 
@@ -22,13 +25,29 @@ detail.body.slice(w.cs, w.ce)            // ❌ 多段正文一定跳字
 `text` 是段落换行**压成空格**后的单行版本，时间轴的 `cs/ce` 就是按它算的。
 `body` 保留了 `\n\n`，用它做偏移会错位。实测 189 词零错位，该契约有测试锁死。
 
-### 坑二：`@main` 有 CDN 缓存
+### 坑二：`index.json` 必须绕过缓存
 
-| 内容 | 会变吗 | 缓存策略 |
-|---|---|---|
-| `data/index.json` | 每天更新 | 5–15 分钟，或加 `?t=${Date.now()}` |
-| 详情 JSON | **不变** | 按 `version_id` 永久缓存 |
-| 音频 | **不变** | 落盘永久缓存 |
+**只有 `index.json` 需要处理缓存**，因为里面给出的 `detail_url` 与 `audio.url`
+**已经固定到具体的 commit SHA**，不会被 CDN 缓存影响。
+
+```javascript
+//✅ 正确：给 index.json 加时间戳
+const index = await fetch(`${BASE}/data/index.json?t=${Date.now()}`)
+  .then(r => r.json());
+
+// 然后直接用 index 里的链接，无需任何额外处理
+const detail = await fetch(index.latest.versions.en[0].detail_url).then(r => r.json());
+```
+
+| 内容 | 链接里是 | 会变吗 | 缓存策略 |
+|---|---|---|---|
+| `data/index.json` | `@main` | 每天更新 | **必须加 `?t=`** |
+| 详情 JSON | `@<commit>` | **不变** | 按 `version_id` 永久缓存 |
+| 音频 | `@<commit>` | **不变** | 落盘永久缓存 |
+
+> **为什么强调这点**：jsDelivr 对分支名 `@main` 缓存较久（实测四个 CDN 节点
+> 有三个返回旧版数据），而客户端一旦从旧 `index.json` 里拿到 `@main` 的链接，
+> 后续所有请求都会持续拿到无时间轴的旧详情。改成 SHA 后此问题消失。
 
 ---
 
@@ -37,8 +56,8 @@ detail.body.slice(w.cs, w.ce)            // ❌ 多段正文一定跳字
 ```javascript
 const BASE = "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@main/content";
 
-// ① 首页列表
-const index = await fetch(`${BASE}/data/index.json`).then(r => r.json());
+// ① 首页列表（必须加时间戳绕过 CDN 缓存）
+const index = await fetch(`${BASE}/data/index.json?t=${Date.now()}`).then(r => r.json());
 index.latest.versions.en   // 英语 5 条（level 1→5）
 index.latest.versions.ja   // 日语 5 条
 index.levels               // 等级字典，启动时缓存
@@ -414,6 +433,7 @@ App 启动
 
 ## 十三、接入自检清单
 
+- [ ] 拉`index.json` 时加了 `?t=` 时间戳
 - [ ] `index.latest.versions.en.length === 5`
 - [ ] `audio.url` 能播放，且 `duration` 与实际时长一致
 - [ ] `detail.timeline.length === item.audio.word_count`
