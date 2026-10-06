@@ -1,0 +1,9 @@
+[project]
+name = "news-etl"
+version = "1.0.0"
+description = "每日英语听力 App 内容后台：新闻抓取 → AI 分级改写 → 带逐词时间轴的免费 TTS"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

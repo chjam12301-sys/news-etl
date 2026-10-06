@@ -1,0 +1,60 @@
+services:
+  # ---- API 服务（App 拉数据用）----
+  - type: web
+    name: news-etl-api
+    runtime: docker
+    plan: free              # 免费版：512MB / 0.5 CPU，休眠后唤醒约 30s
+    region: singapore       # 就近新加坡节点，国内访问更快
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: false
+    envVars:
+      - key: PYTHONPATH
+        value: /app
+      - key: DATA_DIR
+        value: /var/data
+      - key: LLM_PROVIDER
+        value: gemini
+      - key: GEMINI_API_KEY
+        sync: false          # 在 Render 控制台粘贴，不要提交到仓库
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: TTS_ENABLED
+        value: "true"
+      - key: TOPICS
+        value: tech,business,science,health,sports,culture,world
+      - key: ARTICLES_PER_TOPIC
+        value: "1"
+      # Render 免费版不提供持久盘，取消注释则需升级到付费版
+      # - key: DATABASE_URL
+      #   sync: false
+
+  # ---- 每日定时任务（免费 Cron Job）----
+  - type: cron
+    name: news-etl-daily
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    schedule: "0 21 * * *"    # UTC 21:00 = 北京时间次日 05:00
+    dockerCommand: python -m app.cli daily --per-topic 1
+    envVars:
+      - key: PYTHONPATH
+        value: /app
+      - key: DATA_DIR
+        value: /var/data
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: TOPICS
+        value: tech,business,science,health,sports,culture,world
+      - key: ARTICLES_PER_TOPIC
+        value: "1"
+
+  # ---- 更省额度：一周跑两次的补数任务（可选）----
+  # - type: cron
+  #   name: news-etl-topup
+  #   runtime: docker
+  #   plan: free
+  #   schedule: "0 6 * * 1,4"
+  #   dockerCommand: python -m app.cli daily --per-topic 1 --force
+  #   envVars: [...]

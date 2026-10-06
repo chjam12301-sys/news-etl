@@ -1,0 +1,377 @@
+"""LLM 改写层：Gemini / OpenRouter / 离线降级，三种provider 同一接口。"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+from dataclasses import dataclass, field
+from typing import Any
+
+import httpx
+
+from .config import settings
+from .levels import LevelSpec
+
+log = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class RewriteResult:
+    level_code: str
+    lang: str
+    level: int
+    level_label: str
+    title: str
+    paragraphs: list[str]
+    vocab: list[dict[str, Any]] = field(default_factory=list)
+    lead: str = ""
+
+    @property
+    def body(self) -> str:
+        return "\n\n".join(p for p in self.paragraphs if p)
+
+
+SYSTEM_PROMPT = (
+    "You are a professional language-learning content editor. You rewrite real "
+    "news articles into graded reading material for language learners. "
+    "You always reply with a single valid JSON object and nothing else. "
+    "No markdown fences, no commentary."
+)
+
+
+def _user_prompt(topic: str, title: str, source_text: str, spec: LevelSpec) -> str:
+    lang_rule = (
+        "Write ENTIRELY in English."
+        if spec.lang == "en"
+        else "Write ENTIRELY in Japanese (日本語). Do not mix in English except for "
+        "proper nouns or when quoting a source term."
+    )
+    return f"""SOURCE TOPIC: {topic}
+ORIGINAL HEADLINE: {title}
+
+SOURCE TEXT (may be truncated or noisy — infer the facts, never invent new ones):
+---
+{source_text}
+---
+
+TASK
+Rewrite the news above for level `{spec.code}` ({spec.label}).
+
+LEVEL RULES
+{spec.instruction}
+Target length: about {spec.target_words} words. Sentence style: {spec.sentence_hint}.
+
+LANGUAGE RULES
+{lang_rule}
+Keep all names, numbers, dates and places accurate to the source.
+Simplify the language, never distort the facts.
+
+OUTPUT FORMAT — return exactly this JSON shape:
+{{
+  "title": "headline rewritten at this level (under 90 characters)",
+  "lead": "1-3 sentences in {spec.lang} that prepare the reader for the article",
+  "paragraphs": ["paragraph 1", "paragraph 2", "..."],
+  "vocab": [
+    {{"word": "...", "pos": "noun|verb|adj|adv|phrase", "zh": "Chinese gloss", "note": "short usage note in Chinese, may be empty"}}
+  ]
+}}
+
+CONSTRAINTS
+- paragraphs: 3 to 6 items, each 40-120 words.
+- vocab: exactly {spec.vocab_count} items, ordered by how useful they are for this level.
+- Output raw JSON only."""
+
+
+# --------------------------------------------------------------------------- #
+# providers
+# --------------------------------------------------------------------------- #
+class BaseLLM:
+    name = "base"
+
+    async def complete(self, system: str, user: str, *, max_tokens: int = 2400) -> str:
+        raise NotImplementedError
+
+
+class GeminiLLM(BaseLLM):
+    name = "gemini"
+    endpoint = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+    def __init__(self) -> None:
+        self.key = settings.gemini_api_key
+        self.model = settings.gemini_model
+
+    async def complete(self, system: str, user: str, *, max_tokens: int = 2400) -> str:
+        url = self.endpoint.format(model=self.model)
+        payload = {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": user}]}],
+            "generationConfig": {
+                "temperature": 0.7,
+                "topP": 0.95,
+                "maxOutputTokens": max_tokens,
+                "responseMimeType": "application/json",
+            },
+            "safetySettings": [
+                {"category": c, "threshold": "BLOCK_ONLY_HIGH"}
+                for c in (
+                    "HARM_CATEGORY_HARASSMENT",
+                    "HARM_CATEGORY_HATE_SPEECH",
+                    "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                    "HARM_CATEGORY_DANGEROUS_CONTENT",
+                )
+            ],
+        }
+        headers = {"x-goog-api-key": self.key, "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=120) as client:
+            for attempt in range(4):
+                r = await client.post(url, json=payload, headers=headers)
+                if r.status_code == 429 or r.status_code >= 500:
+                    wait = 3 * (attempt + 1)
+                    log.warning("[llm] %s %s，%ds 后重试", self.name, r.status_code, wait)
+                    await asyncio.sleep(wait)
+                    continue
+                r.raise_for_status()
+                data = r.json()
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+        raise RuntimeError("Gemini 重试耗尽")
+
+
+class OpenRouterLLM(BaseLLM):
+    name = "openrouter"
+    endpoint = "https://openrouter.ai/api/v1/chat/completions"
+
+    def __init__(self) -> None:
+        self.key = settings.openrouter_api_key
+        self.model = settings.openrouter_model
+
+    async def complete(self, system: str, user: str, *, max_tokens: int = 2400) -> str:
+        headers = {"Authorization": f"Bearer {self.key}", "Content-Type": "application/json"}
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.7,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
+        }
+        async with httpx.AsyncClient(timeout=120) as client:
+            for attempt in range(4):
+                r = await client.post(self.endpoint, json=payload, headers=headers)
+                if r.status_code == 429 or r.status_code >= 500:
+                    await asyncio.sleep(3 * (attempt + 1))
+                    continue
+                r.raise_for_status()
+                return r.json()["choices"][0]["message"]["content"]
+        raise RuntimeError("OpenRouter 重试耗尽")
+
+
+def get_llm() -> BaseLLM | None:
+    """按配置返回可用 provider；无 key 时返回 None 走离线降级。"""
+    provider = (settings.llm_provider or "gemini").lower()
+    if provider == "gemini" and settings.gemini_api_key:
+        return GeminiLLM()
+    if provider == "openrouter" and settings.openrouter_api_key:
+        return OpenRouterLLM()
+    # 自动兜底：配置写错但另一个有 key 时也能工作
+    if settings.gemini_api_key:
+        return GeminiLLM()
+    if settings.openrouter_api_key:
+        return OpenRouterLLM()
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# JSON 解析
+# --------------------------------------------------------------------------- #
+_FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.M)
+
+
+def parse_json_loose(raw: str) -> dict[str, Any]:
+    text = _FENCE.sub("", raw or "").strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # 截取最外层大括号
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        return json.loads(text[start : end + 1])
+    # 出现第二个对象时，取最后一个
+    starts = [m.start() for m in re.finditer(r"\{", text)]
+    if len(starts) > 1:
+        last = starts[-1]
+        return json.loads(text[last:])
+    raise ValueError("无法解析模型输出为 JSON")
+
+
+def _as_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str) and value.strip():
+        return [p.strip() for p in re.split(r"\n\s*\n|\n", value) if p.strip()]
+    return []
+
+
+def _as_vocab(value: Any, lang: str, limit: int) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    if not isinstance(value, list):
+        return out
+    for item in value[:limit]:
+        if isinstance(item, str):
+            out.append({"word": item, "pos": "", "zh": "", "note": ""})
+            continue
+        if not isinstance(item, dict):
+            continue
+        word = str(item.get("word") or item.get("term") or "").strip()
+        if not word:
+            continue
+        out.append(
+            {
+                "word": word,
+                "pos": str(item.get("pos") or "").strip(),
+                "zh": str(item.get("zh") or item.get("chinese") or "").strip(),
+                "note": str(item.get("note") or "").strip(),
+            }
+        )
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# 离线降级：不等 LLM 也能出结构完整的数据
+# --------------------------------------------------------------------------- #
+_SENT_SPLIT = re.compile(r"(?<=[.!?。！？])\s+")
+
+
+def offline_rewrite(topic: str, title: str, text: str, spec: LevelSpec) -> RewriteResult:
+    """无 LLM 时的启发式降级：分句 → 按等级截断/裁剪，保证 schema 一致。"""
+    flat = re.sub(r"\s*\n\s*\n\s*", "\n\n", text).strip()
+    paras = [p.strip() for p in flat.split("\n\n") if p.strip()] or [title]
+
+    # 低等级取前 2 段并逐句裁剪；高等级保留更多
+    keep_paras = {1: 2, 2: 2, 3: 3, 4: 4, 5: 5}[spec.level]
+    paras = paras[:keep_paras]
+
+    out_paras: list[str] = []
+    for p in paras:
+        sentences = [s.strip() for s in _SENT_SPLIT.split(p) if s.strip()]
+        max_sents = {1: 3, 2: 4, 3: 5, 4: 6, 5: 7}[spec.level]
+        picked = sentences[:max_sents]
+        if not picked:
+            continue
+        joined = " ".join(picked)
+        if spec.level <= 2 and len(joined.split()) > spec.target_words:
+            words = joined.split()
+            joined = " ".join(words[: spec.target_words])
+            # 尽量断在句号
+            m = re.search(r"^(.*[.!?。！？])", joined)
+            joined = m.group(1) if m else joined + "."
+        out_paras.append(joined)
+
+    if not out_paras:
+        out_paras = [title]
+
+    vocab = [
+        {"word": w, "pos": "", "zh": "", "note": "offline 模式未生成释义"}
+        for w in _pick_vocab_words(" ".join(out_paras), spec.lang, spec.vocab_count)
+    ]
+    lead = out_paras[0].split(".")[0][:120] + "."
+
+    return RewriteResult(
+        level_code=spec.code,
+        lang=spec.lang,
+        level=spec.level,
+        level_label=spec.label,
+        title=title[:90],
+        paragraphs=out_paras,
+        vocab=vocab,
+        lead=lead,
+    )
+
+
+_TOKEN_RE = re.compile(r"[A-Za-z']{3,}" if False else r"[A-Za-z']{3,}|[぀-ヿ]{2,}|[一-鿿]{2,}")
+
+
+def _pick_vocab_words(text: str, lang: str, limit: int) -> list[str]:
+    """按词频挑候选词，供 LLM 或离线模式填 vocab。"""
+    from collections import Counter
+
+    if lang == "ja":
+        cands = re.findall(r"[぀-ヿ]{2,}|[一-鿿]{2,}", text)
+    else:
+        cands = [w.lower() for w in re.findall(r"[A-Za-z']{3,}", text)]
+    stop = {
+        "the", "and", "that", "have", "for", "not", "with", "you", "this", "but",
+        "his", "from", "they", "which", "will", "was", "were", "are", "been", "has",
+        "had", "said", "says", "after", "more", "about", "their", "there", "what",
+        "said", "its", "our", "out", "year", "years", "over", "into", "than", "who",
+        "would", "could", "also", "new", "one", "two", "first", "last", "we", "us",
+    }
+    cands = [c for c in cands if c not in stop]
+    return [w for w, _ in Counter(cands).most_common(limit)]
+
+
+# --------------------------------------------------------------------------- #
+# 对外主入口
+# --------------------------------------------------------------------------- #
+async def rewrite_article(
+    topic: str, title: str, text: str, spec: LevelSpec, llm: BaseLLM | None = None
+) -> RewriteResult:
+    """把一篇原文改写成指定等级。失败自动降级到离线模式。"""
+    source = text[:7000]
+    llm = llm or get_llm()
+    if llm is None:
+        log.info("[llm] 无可用 key，离线降级: %s", spec.code)
+        return offline_rewrite(topic, title, source, spec)
+
+    user = _user_prompt(topic, title, source, spec)
+    try:
+        raw = await llm.complete(SYSTEM_PROMPT, user)
+        data = parse_json_loose(raw)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[llm] %s 改写失败(%s)，降级离线: %s", llm.name, exc, spec.code)
+        return offline_rewrite(topic, title, source, spec)
+
+    paragraphs = _as_list(data.get("paragraphs"))[:8]
+    if not paragraphs:
+        log.warning("[llm] %s 返回空正文，降级离线", spec.code)
+        return offline_rewrite(topic, title, source, spec)
+
+    title_out = str(data.get("title") or title).strip()[:120]
+    return RewriteResult(
+        level_code=spec.code,
+        lang=spec.lang,
+        level=spec.level,
+        level_label=spec.label,
+        title=title_out,
+        paragraphs=paragraphs,
+        vocab=_as_vocab(data.get("vocab"), spec.lang, spec.vocab_count),
+        lead=str(data.get("lead") or "").strip()[:400],
+    )
+
+
+async def rewrite_all(
+    topic: str, title: str, text: str, specs: list[LevelSpec], llm: BaseLLM | None = None
+) -> list[RewriteResult]:
+    """一次文章 → 10 个等级。并发执行，llm=None 时逐个降级。"""
+    llm = llm or get_llm()
+
+    async def run(spec: LevelSpec) -> RewriteResult:
+        # 离线模式不并发，避免无意义占用；LLM 模式并发 3 路以避开免费额度限流
+        if llm is None:
+            return offline_rewrite(topic, title, text, spec)
+        sem = asyncio.Semaphore(3)
+        async with sem:
+            return await rewrite_article(topic, title, text, spec, llm)
+
+    results = await asyncio.gather(*(run(s) for s in specs), return_exceptions=True)
+    out: list[RewriteResult] = []
+    for spec, res in zip(specs, results):
+        if isinstance(res, BaseException):
+            log.warning("[llm] %s 异常: %s", spec.code, res)
+            out.append(offline_rewrite(topic, title, text, spec))
+        else:
+            out.append(res)
+    return out

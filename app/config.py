@@ -1,0 +1,74 @@
+"""全局配置：全部通过环境变量注入，便于在 Render / Docker 上直接跑。"""
+from __future__ import annotations
+
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+BASE_DIR = Path(__file__).resolve().parent.parent  # 项目根目录
+DEFAULT_DATA_DIR = BASE_DIR / "data"              # 与项目根同级，容器与本地一致
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
+
+    app_name: str = "每日英语听力 · 内容后台"
+    api_prefix: str = "/api/v1"
+
+    # ---- 存储 ----------------------------------------------------------
+    # 本地开发用 SQLite；Render 上换 Postgres 只需覆盖 DATABASE_URL。
+    # 注意 database_url 是本文件里的字符串，不支持变量引用，因此默认路径在此拼好。
+    database_url: str = f"sqlite:///{DEFAULT_DATA_DIR / 'news.db'}"
+    data_dir: str = str(DEFAULT_DATA_DIR)
+
+    # ---- LLM -----------------------------------------------------------
+    # llm_provider: gemini | openrouter | offline
+    llm_provider: str = "gemini"
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash"
+    openrouter_api_key: str = ""
+    openrouter_model: str = "deepseek/deepseek-chat-v3-0324:free"
+
+    # ---- TTS -----------------------------------------------------------
+    # edge-tts 免费无鉴权，原生返回逐词时间戳
+    tts_enabled: bool = True
+    tts_voice_en: str = "en-US-AriaNeural"
+    tts_voice_ja: str = "ja-JP-NanamiNeural"
+
+    # ---- 抓取 ----------------------------------------------------------
+    topics: str = "tech,business,science,health,sports,culture,world"
+    articles_per_topic: int = 1
+    request_timeout: float = 25.0
+    user_agent: str = (
+        "Mozilla/5.0 (compatible; DailyEnglishBot/1.0; +https://example.com/bot)"
+    )
+
+    # ---- 业务 ----------------------------------------------------------
+    max_words_en: int = 320
+    max_words_ja: int = 420
+
+    @property
+    def data_path(self) -> Path:
+        p = Path(self.data_dir)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    @property
+    def audio_dir(self) -> Path:
+        p = self.data_path / "audio"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+
+@lru_cache
+def get_settings() -> Settings:
+    s = Settings()
+    s.data_path.mkdir(parents=True, exist_ok=True)
+    s.audio_dir.mkdir(parents=True, exist_ok=True)
+    return s
+
+
+settings = get_settings()
