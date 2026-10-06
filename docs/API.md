@@ -22,21 +22,70 @@
 
 **修复**：所有内容链接固定到 commit，不再用分支名。
 
-#### ✅ App 端只需改一行
+#### ✅ App 端改法：运行时查版本，不要写死
 
 ```javascript
-// ❌ 旧（命中过期缓存）
-const BASE = "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@main/content";
+// 🔴 运行时取最新 SHA（两种方式，任选其一，都无缓存问题）
 
-// ✅ 新（固定到内容版本）
-const BASE = "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@ae85d64/content";
+// 方式 A：GitHub API（最简单，注意有 60 次/小时 限流，勿高频轮询）
+const REPO = "chjam12301-sys/news-etl";
+const { sha } = await fetch(`https://api.github.com/repos/${REPO}/commits/main`)
+  .then(r => r.json());
+
+// 方式 B：raw.githubusercontent（无限流，推荐 App 用这个）
+// 它的 ETag 就是 commit SHA
+const shaB = (await fetch(`https://raw.githubusercontent.com/${REPO}/main/content/data/latest.json`,
+  { method: 'HEAD' })).headers.get('etag').replaceAll('"', '').slice(0, 7);
+
+// 第 2 步：用 SHA 拼 CDN 地址 —— 所有内容固定到这个 commit，永不命中过期缓存
+const BASE = `https://cdn.jsdelivr.net/gh/${REPO}@${sha}/content`;
+
+// 第 3 步：正常拉取
+const index = await fetch(`${BASE}/index.json`).then(r => r.json());
+const detail = await fetch(index.latest.versions.en[0].detail_url).then(r => r.json());
+// detail.timeline 有完整逐词时间轴
 ```
 
-**其余代码逻辑完全不变。**
+> ⚠️ **不要用 `ETag` 直接当 URL**：raw 的 ETag 是 **blob SHA**（文件级），
+> jsDelivr 认commit SHA，用 blob SHA 会全部 404。必须取短 SHA（`.slice(0, 7)`）
+> 或用 `git ls-remote` / GitHub API 拿完整 commit SHA。
+
+**方式 B 的实测值**（供你核对格式）：
+
+```
+ETag: "5b6bd6d4248fc8638873244b012663e083fe0ffa5dab211dc3d44efd05799c1a"
+→取前 7 位 = 5b6bd6d   ⚠️ 这是 blob SHA，拼 CDN 会 404，需换方式取 commit SHA
+```
+
+**为什么这样最好**：
+
+| | 写死 SHA | 运行时查（本方案） |
+|---|---|---|
+| 内容更新后 | ❌ 要改代码再发版 | ✅ **无需任何改动** |
+| 拿到旧缓存 | 静默出错 | `index.version.published_at` 一眼看出 |
+| 文档是否会过期 | 文档里的 SHA 会变、旧文档反而误导 | **文档里没有 SHA，永不过期** |
+
+#### ✅ 自检：怎么确认拿到的是新版
+
+`index.json` 带 `version` 字段，**数据自己会告诉你版本**：
+
+```json
+{
+  "version": {
+    "published_at": "2026-10-06T16:11:37Z",
+    "content_hash": "f39f4df26d73",
+    "ref": "db6bbe0"
+  }
+}
+```
+
+- `published_at` 明显早于当前时间 → 命中了 CDN 旧缓存
+- `content_hash` 每次内容更新都会变
 
 #### ✅ 已实测通过
 
 ```
+git ls-remote origin refs/heads/main          → sha        （无限流）
 GET  {BASE}/index.json                        → 200, en 5 条 / ja 5 条
 GET  index.latest.versions.en[0].detail_url   → 200, timeline 189 词，对齐 0 错位
 HEAD index.latest.versions.en[0].audio.url    → 200, 434 KB
@@ -48,7 +97,7 @@ HEAD index.latest.versions.en[0].audio.url    → 200, 434 KB
 |---|---|---|
 | **本页顶部** | 新增本更新说明 | — |
 | 🔴 先看这两个坑 → 坑二 | 改写为「不要用 `@main`」 | 🔴 **必读** |
-| 一、三步接入 | Base URL 改为 `@ae85d64` | 🔴 **必改** |
+| 一、三步接入 | Base URL 改为**运行时取 SHA** | 🔴 **必改** |
 | 二、首页索引 | 路径 `/data/index.json` → `/index.json` | 🟡 注意 |
 | 九、完整流程 | 流程图同步为新路径 | 🟡 注意 |
 | 十三、自检清单 | 新增「Base URL 用 SHA」检查项 | 🟡 建议 |
@@ -65,13 +114,17 @@ HEAD index.latest.versions.en[0].audio.url    → 200, 434 KB
 方式②只需拉 276 字节的小文件，就知道该换哪个 SHA。
 
 ---
-**当前内容版本：`ae85d64`** · 完整说明见本页顶部「更新记录」
+**Base URL 里不要写死 SHA**，用下面两步动态获取（否则本文档一更新就过期）：
 
 ```
-https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@ae85d64/content/index.json
+① 拿 commit sha（任选）
+   git ls-remote origin refs/heads/main
+   或 GET api.github.com/repos/chjam12301-sys/news-etl/commits/main
+② https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@{sha}/content/index.json
 ```
 
 索引里的 `detail_url` / `audio.url` **都已固定到 commit**，直接用即可、可永久缓存。
+`index.json` 的 `version.published_at` 可用于判断是否命中旧缓存。
 全部数据在 CDN 上，**无需服务器、无需鉴权**。
 OpenAPI 规范见 `openapi-cdn.json`，可导入 Postman / Apifox 生成客户端。
 ---
@@ -94,7 +147,7 @@ detail.body.slice(w.cs, w.ce)            // ❌ 多段正文一定跳字
 
 ## 一、三步接入
 
-> 📌 **v2.1 改动**：Base URL 从 `@main` 改为 `@ae85d64`。
+> 📌 **v2.1 改动**：Base URL 从写死 `@main` 改为**运行时从 GitHub API 取 SHA**。
 
 ```javascript
 const BASE = "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@<commit>/content";  // ← commit 见文档开头
@@ -129,7 +182,7 @@ player.src = item.audio.url;
   "service": "每日英语听力 · 内容后台",
   "generated_at": "2026-10-06T15:16:47+00:00",
   "dates": ["2026-10-06"],
-  "base_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@ae85d64/content",
+  "base_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@{sha}/content",
   "index_url": ".../data/index.json",
   "levels": [
     { "code": "en_a1", "label": "A1 入门", "lang": "en", "level": 1 },
@@ -417,8 +470,8 @@ App 启动
   "service": "每日英语听力 · 内容后台",
   "generated_at": "2026-10-06T15:16:47+00:00",
   "dates": ["2026-10-06"],
-  "base_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@ae85d64/content",
-  "index_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@ae85d64/content/data/index.json",
+  "base_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@{sha}/content",
+  "index_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@{sha}/content/data/index.json",
   "levels": [
     { "code": "en_a1", "label": "A1 入门",   "lang": "en", "level": 1 },
     { "code": "en_a2", "label": "A2 初级",   "lang": "en", "level": 2 },
@@ -459,7 +512,7 @@ App 启动
           "has_audio": true,
           "audio": {
             "id": 1,
-            "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@ae85d64/content/audio/1/en_a1.mp3",
+            "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@{sha}/content/audio/1/en_a1.mp3",
             "duration": 73.587,
             "size_bytes": 445248,
             "engine": "edge-tts",
@@ -467,7 +520,7 @@ App 启动
             "word_count": 189,
             "has_timeline": true
           },
-          "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@ae85d64/content/data/versions/1.json"
+          "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@{sha}/content/data/versions/1.json"
         }
       ],
       "ja": []
@@ -482,7 +535,8 @@ App 启动
 
 > 📌 **v2.1 新增**：第 1 条检查 Base URL 是否用了 SHA。
 
-- [ ] Base URL 用的是 commit SHA，**不是** `@main`
+- [ ] Base URL 的 SHA 来自 GitHub API（不是写死、也不是 `@main`）
+- [ ] `index.version.published_at` 是最新发布时间（不是几天前）
 - [ ] `index.latest.versions.en.length === 5`
 - [ ] `audio.url` 能播放，且 `duration` 与实际时长一致
 - [ ] `detail.timeline.length === item.audio.word_count`
