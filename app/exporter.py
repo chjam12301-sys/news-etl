@@ -40,9 +40,13 @@ def _audio_meta(v: ArticleVersion, base: str) -> dict[str, Any] | None:
     a = v.audio
     if not a:
         return None
+    # public_url 存的是完整 CDN 地址（含 content/ 前缀），优先用它
+    url = a.public_url if (a.public_url and a.public_url.startswith("http")) else (
+        f"{base}/audio/1/{v.level_code}.mp3" if base else f"/api/v1/audio/{a.id}.mp3"
+    )
     return {
         "id": a.id,
-        "url": f"{base}/{a.id}.mp3" if base else f"/api/v1/audio/{a.id}.mp3",
+        "url": url,
         "duration": round(a.duration_ms / 1000, 3),
         "size_bytes": a.size_bytes,
         "engine": a.engine,
@@ -87,7 +91,10 @@ def _version_summary(v: ArticleVersion, a: Article, base: str) -> dict[str, Any]
         "has_audio": v.audio is not None,
         "audio": _audio_meta(v, base),
         # 详情地址，App 按需拉取
-        "detail_url": f"{base}/versions/{v.id}.json" if base else f"/api/v1/versions/{v.id}",
+        "detail_url": (
+            f"{base}/data/versions/{v.id}.json" if base
+            else f"/api/v1/versions/{v.id}"
+        ),
     }
 
 

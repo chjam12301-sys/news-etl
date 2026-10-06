@@ -34,13 +34,12 @@ cat <<'BANNER'
       Name : news-audio
       ☑ Public bucket       ← 必须勾！否则 App 读不到音频
 
- 3) 取密钥
-      左侧 Settings → API
+ 3) 取密钥（点右上角绿色 Connect 按钮 →选 Direct 标签）
       复制两项：
         Project URL    （形如 https://abcdefgh.supabase.co）
-        service_role  key  ← 要 service_role，不是 anon key！
-                          （service_role 是灰底那行，泄露可写删，
-                            但只放GitHub Secrets 不外传）
+        secret key← 新版是 sb_secret_... 开头的那个
+                      旧版是 service_role（eyJ... 开头）
+                      ⚠️ 不要用 publishable / anon 那个（只能读不能写）
 
 ----------------------------------------------------------------
 
@@ -48,12 +47,20 @@ BANNER
 
 read -rp "  Project URL: " URL
 echo
-read -rsp "  service_role key（不回显）: " KEY
+read -rsp "  secret key（service_role 或 sb_secret_，不回显）: " KEY
 echo
 
 if [ -z "$URL" ] || [ -z "$KEY" ]; then
   echo "未输入完整，已取消。"
   exit 1
+fi
+
+if [ -n "$KEY" ] && [ "${KEY#sb_}" = "$KEY" ] && [ "${KEY#eyJ}" = "$KEY" ]; then
+  echo
+  echo "⚠ 警告：这串密钥不以 sb_secret_ 或 eyJ 开头，可能复制错了。"
+  echo "  需要能写文件的密钥，不是 sb_publishable_ / anon 那个。"
+  read -rp "仍要继续？(y/N) " ans
+  case "$ans" in [yY]) ;; *) echo "已取消。"; exit 1;; esac
 fi
 
 case "$URL" in

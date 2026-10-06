@@ -210,15 +210,17 @@ def test_r2_falls_back_to_presign(r2):
 # --------------------------------------------------------------------------- #
 # 工厂函数
 # --------------------------------------------------------------------------- #
-def test_get_storage_defaults_to_local(monkeypatch, tmp_path):
-    """所有云存储凭证都为空时，必须回退本地。"""
+def test_local_storage_is_default_after_import(monkeypatch, tmp_path):
+    """所有云存储凭证都为空时，必须回退本地，绝不能因漏配而崩。"""
     from app import config as config_mod
+    from app.storage import LocalStorage, reset_storage
 
     reset_storage()
     s = config_mod.get_settings()
     for k in ("r2_bucket", "r2_access_key_id", "r2_secret_access_key", "r2_endpoint",
               "b2_bucket", "b2_access_key_id", "b2_secret_access_key", "b2_endpoint",
-              "supabase_project_url", "supabase_service_key", "supabase_bucket"):
+              "supabase_project_url", "supabase_service_key", "supabase_bucket",
+              "github_content_repo", "github_branch", "github_cdn_base"):
         monkeypatch.setattr(s, k, "", raising=False)
 
     st = get_storage()
@@ -227,15 +229,19 @@ def test_get_storage_defaults_to_local(monkeypatch, tmp_path):
 
 
 def test_local_storage_is_default_after_import(monkeypatch, tmp_path):
-    """没有任何云存储密钥时，必须回退本地，绝不能因漏配而崩。"""
+    """所有云存储凭证都为空时，必须回退本地，绝不能因漏配而崩。"""
     from app import config as config_mod
+    from app.storage import LocalStorage, reset_storage
 
     reset_storage()
     s = config_mod.get_settings()
     for k in ("r2_bucket", "r2_access_key_id", "r2_secret_access_key", "r2_endpoint",
-              "b2_bucket", "b2_access_key_id", "b2_secret_access_key", "b2_endpoint"):
+              "b2_bucket", "b2_access_key_id", "b2_secret_access_key", "b2_endpoint",
+              "supabase_project_url", "supabase_service_key", "supabase_bucket",
+              "github_content_repo", "github_branch", "github_cdn_base"):
         monkeypatch.setattr(s, k, "", raising=False)
 
     st = get_storage()
-    assert isinstance(st, LocalStorage), f"未配密钥时回退失败，得到 {type(st).__name__}"
+    assert isinstance(st, LocalStorage), f"未配凭证时回退失败，得到 {type(st).__name__}"
     reset_storage()
+

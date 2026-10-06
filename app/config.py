@@ -70,6 +70,15 @@ class Settings(BaseSettings):
     supabase_service_key: str = ""       # service_role key（不是 anon key）
     supabase_bucket: str = "news-audio"
 
+    # ---- GitHub 仓库 + jsDelivr CDN（读取 CDN 通、上传 API 不通时的方案）----
+    # 内容仓库（需为 public）：owner/name
+    github_content_repo: str = ""
+    github_branch: str = "main"
+    # 自定义 CDN 基址，留空则用 https://cdn.jsdelivr.net/gh/<repo>@<branch>
+    github_cdn_base: str = ""
+    # 保留天数（GitHub 仓库不宜过大，按此自动清理）
+    github_keep_days: int = 14
+
     # 存储容量硬上限（GB）。免费额度留余量，超限拒绝写入。
     storage_limit_gb: float = 8.0
 

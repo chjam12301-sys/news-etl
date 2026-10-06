@@ -26,7 +26,7 @@ log = logging.getLogger("guard")
 GB = 1024**3
 DEFAULT_LIMIT_GB = 8.0
 SUPABASE_LIMIT_GB = 0.9  # Supabase 免费额度仅 1GB，留 10% 余量
-_CLOUD_PROVIDERS = ("r2", "b2", "supabase")
+_CLOUD_PROVIDERS = ("r2", "b2", "supabase", "github")
 
 _cache: dict[str, float] = {}
 
@@ -46,6 +46,13 @@ def _list_all_sizes(st) -> int:
             return st.used_bytes()
         except Exception as exc:  # noqa: BLE001
             log.warning("[guard] 读取 Supabase 用量失败: %s", exc)
+            return 0
+
+    if _provider(st) == "github":
+        try:
+            return st.used_bytes()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[guard] 读取 GitHub 内容用量失败: %s", exc)
             return 0
 
     total = 0
@@ -116,6 +123,12 @@ def auto_clean(keep_days: int = 60) -> dict[str, int]:
     import datetime as dt
 
     st = get_storage()
+
+    # GitHub 后端自带 prune（按文件 mtime，且会自动 push 清理结果）
+    if _provider(st) == "github":
+        r = st.prune(keep_days)
+        return {"deleted": r["deleted"], "bytes": r["bytes"]}
+
     if _provider(st) not in _CLOUD_PROVIDERS:
         return {"deleted": 0, "bytes": 0}
 

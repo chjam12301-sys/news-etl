@@ -86,18 +86,17 @@ async def main() -> int:
     os.environ["DATABASE_URL"] = ds
     print("  数据库      : 线上 Neon")
 
-    ask("R2_ACCESS_KEY_ID", "R2_ACCESS_KEY_ID")
-    ask("R2_SECRET_ACCESS_KEY", "R2_SECRET_ACCESS_KEY", secret=True)
-    ask("R2_BUCKET", "R2_BUCKET")
-    ask("R2_ENDPOINT", "R2_ENDPOINT")
-    ask("R2_PUBLIC_BASE", "R2_PUBLIC_BASE")
-    os.environ.setdefault("PUBLIC_BASE_URL", os.environ.get("R2_PUBLIC_BASE", ""))
+    if os.environ.get("STORAGE_BACKEND", "").lower() != "github":
+        ask("R2_ACCESS_KEY_ID", "R2_ACCESS_KEY_ID")
+        ask("R2_SECRET_ACCESS_KEY", "R2_SECRET_ACCESS_KEY", secret=True)
+        ask("R2_BUCKET", "R2_BUCKET")
+        ask("R2_ENDPOINT", "R2_ENDPOINT")
+        ask("R2_PUBLIC_BASE", "R2_PUBLIC_BASE")
+        os.environ.setdefault("PUBLIC_BASE_URL", os.environ.get("R2_PUBLIC_BASE", ""))
+        if not os.environ.get("R2_SECRET_ACCESS_KEY"):
+            print("\n缺少存储密钥。先执行 scripts/save_*_keys.sh\n")
+            return 1
     os.environ.setdefault("EXPORT_JSON", "true")
-
-    if not os.environ.get("R2_SECRET_ACCESS_KEY"):
-        print("\n缺少 R2 密钥。先执行一次下面这条，之后就不用再输了：")
-        print("  bash scripts/save_r2_keys.sh\n")
-        return 1
 
     from app.db import init_db, SessionLocal
     from app.tts import synthesize
@@ -173,7 +172,25 @@ async def main() -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"  ✗ 导出失败: {exc}")
 
-    base = os.environ.get("R2_PUBLIC_BASE", "")
+    # Git 存储：一次性提交，避免每个文件 push 一次
+    if getattr(storage, "provider", "") == "github":
+        print("\n  提交到 GitHub ...")
+        try:
+            pushed = storage.commit(f"content: {ok} 个音频 + JSON 索引")
+            print(f"  {'✓ 已推送' if pushed else '（无变更）'}")
+            # 顺带清理旧文件，控制仓库体积
+            from app.config import get_settings
+            keep = getattr(get_settings(), "github_keep_days", 14)
+            r = storage.prune(keep)
+            if r["deleted"]:
+                print(f"  ✓ 已清理 {r['deleted']} 个超过 {keep} 天的文件"
+                      f"（释放 {r['bytes'] / 1024 / 1024:.1f} MB）")
+            used = storage.used_bytes() / 1024 / 1024
+            print(f"  仓库内容当前 {used:.1f} MB")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ✗ 推送失败: {exc}")
+
+    base = os.environ.get("PUBLIC_BASE_URL", "")
     print("\n" + "=" * 60)
     print(f"  成功 {ok} / 失败 {fail}")
     if base:

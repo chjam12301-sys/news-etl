@@ -400,21 +400,41 @@ def get_storage() -> Storage:
 
         return SupabaseStorage(bucket=bucket, project_url=url, service_key=key)
 
+    def _try_github() -> Storage | None:
+        repo = getattr(settings, "github_content_repo", "")
+        if not repo:
+            return None
+        from .storage_github import GitHubStorage
+
+        return GitHubStorage(
+            repo=repo,
+            branch=getattr(settings, "github_branch", "main") or "main",
+            local_dir=str(settings.data_path.parent),
+            cdn_base=getattr(settings, "github_cdn_base", "") or "",
+            token=getattr(settings, "github_token", "") or "",
+        )
+
+    _cloud = [_try_supabase, _try_b2, _try_r2]
     chain = {
-        "supabase": [_try_supabase, _try_b2, _try_r2],
-        "b2": [_try_b2, _try_supabase, _try_r2],
-        "r2": [_try_r2, _try_supabase, _try_b2],
-    }.get(backend, [_try_supabase, _try_b2, _try_r2])
+        "github": [_try_github, *_cloud],
+        "supabase": [_try_supabase, _try_github, _try_b2, _try_r2],
+        "b2": [_try_b2, _try_github, *_cloud],
+        "r2": [_try_r2, _try_github, *_cloud],
+    }.get(backend, [_try_github, *_cloud])
     order = chain
     for factory in order:
         try:
             st = factory()
         except Exception as exc:  # noqa: BLE001
-            log.error("[storage] %s 初始化失败: %s", getattr(st, "provider", "?"), exc)
+            log.error("[storage] 存储初始化失败(%s): %s", factory.__name__, exc)
             continue
         if st is not None:
             _storage = st
-            log.info("[storage] 使用 %s, bucket=%s", st.provider, st.bucket)
+            log.info(
+                "[storage] 使用 %s (%s)",
+                st.provider,
+                getattr(st, "repo", getattr(st, "bucket", "")),
+            )
             return _storage
 
     _storage = LocalStorage(settings.data_path / "storage")
