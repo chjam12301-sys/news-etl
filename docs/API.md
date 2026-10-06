@@ -6,10 +6,10 @@
 > 表现为「详情里没有timeline」。四个节点实测：`cdn` / `fastly` / `gcore` 都返回
 > 旧版（timeline=0），只有 `@<commit>` 返回正确数据。
 >
-> **当前内容版本：`587e7ac`**
+> **当前内容版本：`ae85d64`**
 >
 > ```
-> https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@587e7ac/content/index.json
+> https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@ae85d64/content/index.json
 > ```
 >
 > 索引里的 `detail_url` / `audio.url` **都已固定到 commit**，
@@ -70,7 +70,7 @@ player.src = item.audio.url;
   "service": "每日英语听力 · 内容后台",
   "generated_at": "2026-10-06T15:16:47+00:00",
   "dates": ["2026-10-06"],
-  "base_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@587e7ac/content",
+  "base_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@ae85d64/content",
   "index_url": ".../data/index.json",
   "levels": [
     { "code": "en_a1", "label": "A1 入门", "lang": "en", "level": 1 },
@@ -356,8 +356,8 @@ App 启动
   "service": "每日英语听力 · 内容后台",
   "generated_at": "2026-10-06T15:16:47+00:00",
   "dates": ["2026-10-06"],
-  "base_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@587e7ac/content",
-  "index_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@587e7ac/content/data/index.json",
+  "base_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@ae85d64/content",
+  "index_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@ae85d64/content/data/index.json",
   "levels": [
     { "code": "en_a1", "label": "A1 入门",   "lang": "en", "level": 1 },
     { "code": "en_a2", "label": "A2 初级",   "lang": "en", "level": 2 },
@@ -398,7 +398,7 @@ App 启动
           "has_audio": true,
           "audio": {
             "id": 1,
-            "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@587e7ac/content/audio/1/en_a1.mp3",
+            "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@ae85d64/content/audio/1/en_a1.mp3",
             "duration": 73.587,
             "size_bytes": 445248,
             "engine": "edge-tts",
@@ -406,7 +406,7 @@ App 启动
             "word_count": 189,
             "has_timeline": true
           },
-          "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@587e7ac/content/data/versions/1.json"
+          "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@ae85d64/content/data/versions/1.json"
         }
       ],
       "ja": []
