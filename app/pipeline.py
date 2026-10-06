@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete as _delete, select
 from sqlalchemy.orm import Session, selectinload
 
 from .config import settings
@@ -220,8 +220,23 @@ async def run_daily(
     per_topic: int | None = None,
     with_tts: bool = True,
     force: bool = False,
+    reset_all: bool = False,
 ) -> dict[str, Any]:
-    """执行一次完整流水线，返回统计结果。"""
+    """执行一次完整流水线。
+
+    reset_all=True 时先清空 articles 表（连带versions/audio），
+    用于「RSS 去重导致抓不到新文章」时重新开始。
+    """
+    if reset_all:
+        init_db()
+        d = SessionLocal()
+        try:
+            n_v = d.execute(_delete(ArticleVersion)).rowcount
+            n_a = d.execute(_delete(Article)).rowcount
+            d.commit()
+            log.info("[pipe] 已清空 %d 篇文章 / %d 个版本", n_a, n_v)
+        finally:
+            d.close()
     started = dt.datetime.now(dt.timezone.utc)
     init_db()
     job = JobRun(job="daily", status="running", started_at=started)
