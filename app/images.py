@@ -116,7 +116,8 @@ async def search_openverse(
         "page_size": page_size,
         "mature": "false",
     }
-    headers = {"User-Agent": f"news-etl/{settings.app_name[:20]}"}
+    # HTTP 头只能放 ASCII —— app_name 是中文，直接放会抛 UnicodeEncodeError
+    headers = {"User-Agent": "news-etl/1.0 (+https://github.com/news-etl)"}
 
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
