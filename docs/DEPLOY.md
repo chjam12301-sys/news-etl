@@ -1,142 +1,132 @@
-# 部署指南 · 全免费方案
+# 部署指南 · 无服务器全免费方案
 
-> 一台机器都不要买。以下全部落在免费额度内。
-
----
-
-## 一、选型与理由
-
-| 组件 | 方案 | 免费额度 | 为什么选它 |
-|---|---|---|---|
-| 云服务器 | **Render Web Service** | 750 小时/月（≈ 全月） | 无需信用卡，Docker 直部署，有健康检查与自动休眠唤醒 |
-| 定时任务 | **Render Cron Job** | 免费 | 独立于 Web 服务，跑完即退，不占常驻额度 |
-| 数据库 | **SQLite**（本地开发）/ Postgres（Render） | — | 数据量小（每天 70 行版本）；免费 Render 不带持久盘，见下方「必须注意」 |
-| AI 改写 | **Gemini 2.5 Flash** free tier | 1500 次/天 | 我们每天只用 70 次，余量极大；不够时自动切 OpenRouter 免费模型 |
-| TTS | **edge-tts** | **无限制** | 微软 Edge 浏览器同款引擎，无需 key，**原生输出逐词时间戳** |
-| 新闻源 | 21 个公开 RSS | 无限制 | BBC / Ars / Nature / WHO / ESPN 等，无需 API key |
-
-**每天消耗**：70 次 Gemini 调用（额度 4.2%）+ 70 段 TTS（不限量）+ 约 30MB 数据。
+> **架构已改**：不再用 Render。原因是 Render 免费版空闲 15 分钟即休眠（App 首请求要等 30–60 秒）、
+> 无持久盘（数据必丢）、自带 Postgres 30 天过期、且注册需绑卡。
+>
+> 新方案：GitHub Actions 负责「生成」，Neon + R2 负责「存储」，CDN 负责「读取」。
+> **没有服务器**，因此没有冷启动、没有数据库连接失败、没有月费。
 
 ---
 
-## 二、需要你注册的（2 个，全程约 5 分钟，不绑卡）
+## 一、架构与配额
 
-### 1️⃣ Render —— https://render.com
+```
+       每天 05:00（北京时间）
+GitHub Actions ──► 抓 RSS ──► Gemini 分级改写 ──► edge-tts 配音+时间轴
+   2000 min/月          │
+   （我们约 150）        ├──► 音频 ──► Cloudflare R2（10GB 免费 + 出网免费）
+                        └──► 数据 ──► Neon Postgres（0.5GB 免费）
+                                └──► JSON ──► R2（同一bucket）
 
-1. 点 `Get Started` → 用 **GitHub 或邮箱**注册
-2. **不要**选任何付费方案，免费版足够
-3. 登录后进入 Dashboard
+App 端：直接读 R2 / CDN 的 JSON 与音频，完全不经过服务器
+```
 
-### 2️⃣ Google AI Studio（拿 Gemini key）—— https://aistudio.google.com/apikey
+| 组件 | 服务 | 免费额度 | 我们的用量 | 占比 |
+|---|---|---|---|---|
+| 定时计算 | GitHub Actions | 2000 min/月 | ~150 min | **7.5%** |
+| 对象存储 | Cloudflare R2 | 10 GB + 出网免费 | ~1 GB/月 | 10% |
+| 数据库 | Neon Postgres | 0.5 GB，100 项目 | ~1 MB/月 | 0.2% |
+| AI 改写 | Gemini 2.5 Flash | 1500 次/天 | 70 次/天 | **4.7%** |
+| TTS | edge-tts | **无限制** | 70 段/天 | — |
+| 新闻源 | 21 个公开 RSS | 无限制 | 70 次/天 | — |
 
-1. 用 Google 账号登录
-2. 点 `Create API Key` → 复制保存（形如 `AIza...`）
-3. 免费额度：Gemini 2.5 Flash 每天 1500 次，我们每天用 70 次
+**总成本 0 元，全部不绑卡。**
 
-> ⚠️ **暂时不想注册 AI key 也能跑**：留空 `GEMINI_API_KEY` 时系统自动进入**离线降级模式**——
-> 接口结构、正文、时间轴、音频全部正常产出，只是文本不做真正的分级改写（走分句裁剪）。
-> 建议先这样验证链路，再补 key。
+注册步骤见 → **[`注册指南.md`](注册指南.md)**（3 个账号，约 15 分钟）
 
 ---
 
-## 三、部署步骤
+## 二、为什么这样更好
 
-### 方式 A：一键 Blueprint（推荐）
+| 问题 | 旧方案（Render 免费） | 新方案 |
+|---|---|---|
+| App 首请求延迟 | 30–60 秒（休眠唤醒） | **CDN 边缘，几十毫秒** |
+| 数据持久性 | 本地盘，部署即丢 | R2 / Neon 持久 |
+| 数据库过期 | 自带 Postgres 30 天 | Neon 免费永久 |
+| 定时任务 | 独立容器，不共享内存 | GitHub Actions，无需共享 |
+| 需否绑卡 | 需要 | **不需要** |
+| 服务器成本 | 免费但有休眠 | 无服务器 |
 
-1. 把本目录推到 GitHub 仓库
-2. Render Dashboard → `New` → `Blueprint`
-3. 选择你的仓库，Render 自动读 `render.yaml`
-4. 在表单里填 `GEMINI_API_KEY`（sync:false 字段会要求你手填）
-5. 点 `Apply` → 完成
+---
 
-得到两个服务：
-- `news-etl-api`（Web）→ 提供 API
-- `news-etl-daily`（Cron）→ 每天 UTC 21:00（北京时间次日 05:00）跑流水线
+## 三、三种消费模式
 
-### 方式 B：手动 Web Service
+### 1. CDN 直读（推荐，App 端首选）
 
-1. `New` → `Web Service` → 连仓库
-2. Environment：`Docker`
-3. Region：`Singapore`
-4. Instance Type：`Free`
-5. Health Check Path：`/health`
-6. 环境变量：
+配好 R2 后，内容自动导出为 JSON：
 
-| Key | Value |
+```
+https://<bucket>.r2.dev/data/index.json首页列表（en/ja 分组）
+https://<bucket>.r2.dev/data/<date>/index.json   某天完整列表
+https://<bucket>.r2.dev/data/versions/<id>.json  详情 + 逐词时间轴
+https://<bucket>.r2.dev/audio/<article_id>/<level>.mp3
+```
+
+App 启动调一次 `/api/v1/config` 拿到这些模板，之后全部走 CDN。
+
+### 2. REST 接口（本地开发 / 需要动态筛选）
+
+14 个接口保持不变，见 [`API.md`](API.md)。本地 `python -m app.cli serve` 即可。
+
+### 3. 兜底：手动跑
+
+```bash
+python -m app.cli daily --per-topic 2 --force
+```
+
+---
+
+## 四、必须注意的三件事
+
+### 1. 时间轴的坐标系
+
+详情 JSON 里的 `cs/ce` 字符偏移是相对 **`text`**（段落换行已压成空格）计算的。
+
+```json
+{
+  "text": "第一段内容 第二段内容",   // ← 高亮必须用它
+  "body": "第一段内容\n\n第二段内容", // ← 不能用它做 slice
+  "timeline": [{ "w": "第一段内容", "cs": 0, "ce": 5, "sm": 100, "em": 500 }]
+}
+```
+
+直接用 `body` 会导致多段正文的高亮跳字。该契约已有测试锁死。
+
+### 2. R2 的 10GB 会满
+
+按当前用量（1GB/月）约 10 个月。超出后需要清理或升级。简单做法是加个保留策略：
+
+```bash
+# 只保留最近 30 天的音频
+aws s3 rm s3://news-etl-audio/audio/ --recursive --exclude "*"  # 按需自行实现
+```
+
+或在流水线里加一步 `_cleanup_old_audio(days=30)`。
+
+### 3. GitHub 的定时任务会延迟
+
+GitHub 不保证准时，繁忙时段延迟 15–20 分钟很常见。已做两件事缓解：
+- cron 用 `30 21 * * *` 而非整点，避开调度高峰
+- 逻辑不依赖精确时间（每天只要跑成一次即可）
+
+---
+
+## 五、国内访问速度
+
+三个服务商在国内都不是最优解：
+
+| 服务 | 国内体验 |
 |---|---|
-| `GEMINI_API_KEY` | 你的 key |
-| `PYTHONPATH` | `/app` |
-| `DATA_DIR` | `/var/data` |
-| `TTS_ENABLED` | `true` |
-| `TOPICS` | `tech,business,science,health,sports,culture,world` |
-| `ARTICLES_PER_TOPIC` | `1` |
+| Cloudflare | 一般，部分时段不稳定 |
+| Neon | 一般，无大陆节点 |
+| GitHub Actions | 仅影响生成速度，不影响 App 读取 |
 
-7. 再 `New` → `Cron Job`，Docker 命令填 `python -m app.cli daily --per-topic 1`，Schedule 填 `0 21 * * *`
+**影响面分析**：App 读的是 Cloudflare CDN 的静态 JSON 和音频，走的是 Cloudflare 全球节点。
+如果你的用户主要在国内且对速度敏感，后续可考虑把 R2 的公开域名换成国内 CDN
+（又拍云 / 七牛等），**代码无需改动** —— 因为 App 只认 `/api/v1/config` 返回的 `base_url`。
 
----
-
-## 四、⚠️ 免费版必须处理的两个坑
-
-Render **免费实例的本地磁盘不持久**，重启/重新部署会丢数据。这会影响两个东西：数据库和音频文件。
-
-### 方案 1：挂持久盘（需免费磁盘）
-
-Render 免费 Web Service 不提供持久盘；若你的账号有，选一个挂到 `/var/data`，
-并设 `DATA_DIR=/var/data`。数据库和音频都会持久化。
-
-### 方案 2：全外置（100% 免费，推荐）
-
-数据库换免费托管 Postgres，音频换对象存储：
-
-```bash
-# 数据库：Neon / Supabase / Aiven，任选，均有免费层
-DATABASE_URL=postgresql+psycopg://user:pass@ep-xxx.region.aws.neon.tech/dbname
-
-# 音频：Cloudflare R2（S3 兼容）—— 免费 10GB/月，足够放 1 年
-```
-
-代码侧把 `AudioAsset.file_path` 换成 R2 对象 key（当前已把路径存库，切换只需改读取处）。
-
-### ⚠️ 还有一个坑：Cron Job 和 Web Service 不共享内存
-
-免费版 Cron Job 每次都是**全新容器**，它写入的数据 Web Service 要能读到。
-所以**两者必须共用同一个数据库**。只靠各自本地 SQLite 的话，Cron 跑出来的内容 API 读不到。
-
-**最省事的做法**：把整条流水线挂到 Web 服务上，用一个内部定时器触发，不建独立 Cron Job。
-在 `app/main_api.py` 加 APScheduler，或直接让 Render Cron 调 Web 服务的接口：
-
-```
-# Render Cron Job 命令（无需镜像和数据库）
-curl -X POST https://<你的域名>/api/v1/jobs/daily
-```
-
-这样数据落在 Web 服务所在的同一个库里，且有持久盘时最稳。
-
-> 推荐最终形态：**只建 Web Service** + Cron Job 调上面的 `curl`。代码已支持。
-
----
-
-## 五、验证部署
-
-```bash
-BASE=https://你的域名
-
-# 1. 探活（首次会唤醒免费实例，约 30s）
-curl $BASE/health
-
-# 2. 等级字典
-curl $BASE/api/v1/levels
-
-# 3. 手动触发一次流水线（补首日数据）
-curl -X POST "$BASE/api/v1/jobs/daily?per_topic=1"
-
-# 4. 看结果
-curl "$BASE/api/v1/articles?lang=en&level=3&limit=5"
-curl "$BASE/api/v1/versions/1/timeline"     # 逐词时间轴
-curl -I "$BASE/api/v1/audio/1.mp3"           # 音频（应 200/206）
-```
-
-交互式文档：`<域名>/docs`
+如果确定要国内极速访问，另一条路是付费国内 VPS（约 ¥10–24/月），
+数据库和音频已在外部存储，迁移只需改 API 的读取源，不需要搬数据。
 
 ---
 
@@ -145,33 +135,25 @@ curl -I "$BASE/api/v1/audio/1.mp3"           # 音频（应 200/206）
 ```bash
 cd news-etl
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp .env.example .env              # 留空即可运行（走离线降级 + 本地存储）
 
-cp .env.example .env        # 按需填 key，留空也能跑
-
-.venv/bin/python -m app.cli daily --topics tech --per-topic 1   # 跑一次
-.venv/bin/python -m app.cli serve                              # 起服务 :8000
-.venv/bin/python -m pytest tests/ -q                           # 跑测试
+.venv/bin/python -m app.cli daily --per-topic 1
+.venv/bin/python -m app.cli serve          # http://127.0.0.1:8000/docs
+.venv/bin/python -m pytest tests/ -q
 ```
 
----
-
-## 七、成本核算
-
-| 项目 | 用量 | 免费额度 | 占比 |
-|---|---|---|---|
-| Render Web | ~12 h/月（每天 3 次请求，触发唤醒） | 750 h | 1.6% |
-| Gemini | 70 次/天 = 2100 次/月 | 45000 次 | 4.7% |
-| TTS | 70 段/天 | **无限** | — |
-| RSS 抓取 | 70 次/天 | 无限 | — |
-| 数据存储 | ~1 GB/月 | 10 GB（R2） | 10% |
-
-**结论：0 元。** 触顶的唯一可能是 Web 被高频访问导致 Render 免费时长耗尽 —— 加一层 CDN 缓存即可化解。
+想模拟 R2，在 `.env` 里填上 R2 四项配置即可，代码零改动自动切换。
 
 ---
 
-## 八、想提高内容质量
+## 七、故障排查
 
-1. **加 AI key**（第 2 步），这是从「裁剪」变成「真正分级改写」的分水岭
-2. 提高频率：`ARTICLES_PER_TOPIC=2`，每天 14 篇 → 140 个版本（Gemini 仍只占 9%）
-3. 换音色：`TTS_VOICE_EN` / `TTS_VOICE_JA`，可用 `edge-tts --list-voices` 查看全部
-4. 加主题：编辑 `app/fetcher.py` 的 `FEEDS` 列表
+| 现象 | 排查 |
+|---|---|
+| Actions 没跑 | 仓库 60 天无活动会被禁用；workflow 末尾有自动 commit 保持活跃 |
+| `ModuleNotFoundError: botocore` | 忘了装 boto3（本地）或 requirements 未更新（Actions） |
+| 音频 404 | R2 的 Access Key 没有写权限，或 Secret 复制时带空格 |
+| `no such table` | Neon 上跑一次任意请求即可自动建表（`init_db()`） |
+| JSON 导出为空 | 检查 `EXPORT_JSON` 是否为 false，或查看 Actions 日志中 `export` 字段 |
+| 音频返回 302 | 正常 ——说明已走 CDN 跳转 |
+| 高亮跳字 | App 端改用 `text` 字段而非 `body`（见第四节第1 条） |

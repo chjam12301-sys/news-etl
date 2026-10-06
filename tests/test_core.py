@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -49,6 +50,38 @@ def test_level_word_counts_increase():
 # --------------------------------------------------------------------------- #
 def test_normalize_collapses_newlines():
     assert normalize_for_tts("a\n\nb\n c") == "a b c"
+
+
+def test_spoken_text_is_alias_of_normalize():
+    from app.tts import spoken_text
+
+    assert spoken_text is normalize_for_tts
+
+
+def test_timeline_offsets_index_into_spoken_text_not_body():
+    """关键契约：cs/ce 必须相对「压平后的单行文本」。
+
+    若误用带换行的 body 定位，多段正文一定错位 —— 这类 bug 在 App 上表现为
+    「逐词高亮跳字」，排查成本极高，故在此锁死。
+    """
+    body = "First paragraph here.\n\nSecond paragraph with more words."
+    spoken = normalize_for_tts(body)
+    assert "\n" not in spoken
+    # 构造一个覆盖全文的时间轴
+    tokens = [(m.group(0), m.start(), m.end())
+              for m in re.finditer(r"[A-Za-z']+|[^\sA-Za-z']", spoken)]
+    fake = [
+        {"i": i, "w": tok, "s": i * 0.3, "e": i * 0.3 + 0.25,
+         "sm": i * 300, "em": i * 300 + 250,
+         "cs": cs, "ce": ce, "si": 0}
+        for i, (tok, cs, ce) in enumerate(tokens)
+    ]
+    # 对 spoken 应当全部命中
+    assert all(spoken[w["cs"]:w["ce"]] == w["w"] for w in fake)
+
+    # 反证：body 与 spoken 在换行处之后确实不同 —— 否则样本无意义
+    second = spoken.index("Second")
+    assert body[second:second + 6] != spoken[second:second + 6], "样本无换行，无法验证该契约"
 
 
 def test_split_sentences_both_langs():

@@ -16,6 +16,7 @@ from .db import Article, ArticleVersion, AudioAsset, JobRun, SessionLocal, init_
 from .fetcher import RawArticle, collect
 from .levels import ALL_LEVELS
 from .rewriter import get_llm, rewrite_all
+from .storage import audio_key, get_storage
 from .tts import synthesize
 
 log = logging.getLogger("pipeline")
@@ -117,6 +118,7 @@ async def _process_article(
     db.flush()
 
     if with_tts and settings.tts_enabled:
+        storage = get_storage()
         for version in db.scalars(
             select(ArticleVersion)
             .options(selectinload(ArticleVersion.audio))
@@ -126,10 +128,14 @@ async def _process_article(
                 continue
             try:
                 res = await synthesize(version.body, version.lang)
-                suffix = ".mp3" if res.audio_bytes[:3] == b"ID3" or res.engine == "edge-tts" else ".wav"
-                fname = f"a{version.article_id}_{version.level_code}{suffix}"
-                path = settings.audio_dir / fname
-                path.write_bytes(res.audio_bytes)
+                is_mp3 = res.audio_bytes[:3] == b"ID3" or res.engine == "edge-tts"
+                ext = "mp3" if is_mp3 else "wav"
+                key = audio_key(version.article_id, version.level_code, ext)
+                obj = storage.put(
+                    key,
+                    res.audio_bytes,
+                    content_type="audio/mpeg" if is_mp3 else "audio/wav",
+                )
                 if version.audio is not None:
                     db.delete(version.audio)
                     db.flush()
@@ -138,7 +144,9 @@ async def _process_article(
                         version_id=version.id,
                         lang=version.lang,
                         voice=res.voice,
-                        file_path=str(path),
+                        # 库里存对象 key，不再是本地绝对路径
+                        file_path=key,
+                        public_url=obj.url or "",
                         duration_ms=int(res.duration * 1000),
                         size_bytes=len(res.audio_bytes),
                         timeline=res.timeline_dict(),
@@ -201,6 +209,16 @@ async def run_daily(
                 errors.append(f"{raw.source_url}: {exc}")
                 log.exception("[pipe] 单篇失败 %s", raw.source_url)
                 db.rollback()
+
+        # 导出静态 JSON（CDN 直读用）。失败不影响主流程。
+        try:
+            from .exporter import export_all
+
+            export_result = export_all(db)
+            totals["export"] = "ok" if export_result.get("exported") else "skipped"
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[pipe] JSON 导出失败: %s", exc)
+            totals["export"] = "failed"
 
         job.status = "failed" if errors and totals["versions"] == 0 else "success"
         job.stats = totals

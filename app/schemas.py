@@ -163,6 +163,8 @@ class HealthOut(BaseModel):
     llm_enabled: bool
     tts_enabled: bool
     tts_engine: str
+    storage: str = "local"
+    export_json: bool = False
     articles: int
     versions: int
     audios: int

@@ -3,8 +3,10 @@ __pycache__/
 *.pyc
 .env
 .pytest_cache/
+.pytest-tmp/
 
 # 运行时数据：数据库与音频都属本地/容器产物，不入库
 data/
 app/data/
+.runs/
 !data/.gitkeep

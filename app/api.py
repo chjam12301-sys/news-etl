@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -26,6 +26,8 @@ from .schemas import (
     VocabWord,
     WordTimingOut,
 )
+from .storage import day_index_key, get_storage, index_key, version_key
+from .tts import normalize_for_tts
 
 log = logging.getLogger("news")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s | %(message)s")
@@ -65,6 +67,7 @@ def health(db: Session = Depends(get_db)) -> HealthOut:
     articles = db.scalar(select(func.count()).select_from(Article)) or 0
     versions = db.scalar(select(func.count()).select_from(ArticleVersion)) or 0
     audios = db.scalar(select(func.count()).select_from(AudioAsset)) or 0
+    storage = get_storage()
     return HealthOut(
         status="ok",
         service=settings.app_name,
@@ -73,11 +76,32 @@ def health(db: Session = Depends(get_db)) -> HealthOut:
         llm_enabled=bool(settings.gemini_api_key or settings.openrouter_api_key),
         tts_enabled=settings.tts_enabled,
         tts_engine="edge-tts",
+        storage=storage.name,
+        export_json=settings.export_json,
         articles=articles,
         versions=versions,
         audios=audios,
         server_time=dt.datetime.now(dt.timezone.utc).isoformat(),
     )
+
+
+@app.get("/api/v1/config", tags=["meta"], summary="App 端启动配置（一次拉齐所有静态地址）")
+def client_config() -> dict[str, Any]:
+    """App 启动时调一次，拿到所有 CDN / JSON 地址，之后全部走 CDN。"""
+    base = (settings.public_base_url or "").rstrip("/")
+    return {
+        "json_enabled": settings.export_json,
+        "base_url": base,
+        "index_url": f"{base}/data/index.json" if base else "/data/index.json",
+        "day_index_pattern": (f"{base}/data/{{date}}/index.json" if base else "/data/{date}/index.json"),
+        "version_detail_pattern": (f"{base}/data/versions/{{id}}.json" if base else "/data/versions/{id}.json"),
+        "api_base": base or "",
+        "levels": [
+            {"code": lv.code, "lang": lv.lang, "label": lv.label, "level": lv.level}
+            for lv in sorted(ALL_LEVELS, key=lambda x: (x.lang, x.level))
+        ],
+        "server_time": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
 
 
 @app.get("/api/v1/levels", response_model=list[LevelOut], tags=["meta"])
@@ -258,8 +282,10 @@ def _audio_out(v: ArticleVersion) -> AudioOut | None:
     a = v.audio
     if not a:
         return None
+    # 有公开地址就用它（CDN 直出），否则回落到自建接口
+    url = a.public_url if (a.public_url and a.public_url.startswith("http")) else f"/api/v1/audio/{a.id}.mp3"
     return AudioOut(
-        url=f"/api/v1/audio/{a.id}.mp3",
+        url=url,
         duration=a.duration_ms / 1000,
         size_bytes=a.size_bytes,
         engine=a.engine,
@@ -284,18 +310,95 @@ def version_audio(version_id: int, db: Session = Depends(get_db)) -> AudioOut:
 
 @app.get("/api/v1/audio/{audio_id}.mp3", tags=["audio"])
 def serve_audio(audio_id: int, db: Session = Depends(get_db), download: bool = False):
-    """返回音频文件，支持 Range（播放器拖动进度条必需）。"""
+    """返回音频。
+
+    - R2 / 对象存储配置了公开域名 → 302 跳转，让 CDN 直出（省服务器带宽）
+    - 否则从存储读取并支持 Range（播放器拖进度条必需）
+    """
     a = db.get(AudioAsset, audio_id)
     if not a:
         raise HTTPException(404, "音频不存在")
-    path = Path(a.file_path)
-    if not path.exists():
+
+    # 1) 已有公开 URL → 交给 CDN
+    if a.public_url and a.public_url.startswith(("http://", "https://")):
+        return RedirectResponse(a.public_url, status_code=302)
+
+    # 2) 从存储读
+    from .storage import get_storage
+
+    st = get_storage()
+    data: bytes | None = None
+    key = a.file_path
+    # 兼容旧数据：file_path 曾是本地绝对路径
+    if key and not key.startswith(("audio/", "http")) and Path(key).is_file():
+        data = Path(key).read_bytes()
+    else:
+        data = st.read(key) if key else None
+
+    if not data:
         raise HTTPException(410, "音频文件已丢失，请重新生成")
-    media = "audio/mpeg" if path.suffix == ".mp3" else "audio/wav"
-    return FileResponse(
-        path, media_type=media,
-        headers={"Accept-Ranges": "bytes", "Cache-Control": "public, max-age=604800"},
-        filename=path.name if download else None,
+
+    ext = key.rsplit(".", 1)[-1].lower() if key else "mp3"
+    media = "audio/mpeg" if ext == "mp3" else "audio/wav"
+    headers = {"Accept-Ranges": "bytes", "Cache-Control": "public, max-age=604800"}
+    return Response(
+        content=data,
+        media_type=media,
+        headers=headers,
+        filename=f"{audio_id}.{ext}" if download else None,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 静态 JSON 分发（CDN 直读；App 可完全不经服务器）
+# --------------------------------------------------------------------------- #
+@app.get("/data/index.json", tags=["static"], summary="全量索引（App 首页用）")
+def static_index():
+    return _serve_json(index_key())
+
+
+@app.get("/data/{date_str}/index.json", tags=["static"], summary="某天完整列表")
+def static_day(date_str: str):
+    return _serve_json(day_index_key(date_str))
+
+
+@app.get("/data/versions/{version_id}.json", tags=["static"], summary="单版本详情+时间轴")
+def static_version(version_id: int):
+    return _serve_json(version_key(version_id))
+
+
+@app.get("/files/{key:path}", tags=["static"], summary="本地存储模式下的音频直读")
+def local_files(key: str):
+    """仅本地模式用：把本地存储里的对象暴露出去，行为与 CDN 一致。"""
+    from .storage import get_storage
+
+    st = get_storage()
+    data = st.read(key)
+    if not data:
+        raise HTTPException(404, "not found")
+    ext = key.rsplit(".", 1)[-1].lower()
+    media = "audio/mpeg" if ext == "mp3" else ("application/json" if ext == "json" else "application/octet-stream")
+    if key.endswith(".json"):
+        return Response(data, media_type="application/json; charset=utf-8")
+    return Response(data, media_type=media, headers={"Cache-Control": "public, max-age=604800"})
+
+
+def _serve_json(key: str):
+    """从存储读 JSON 并直接返回（供 App / CDN 取）。"""
+    from .storage import get_storage
+
+    st = get_storage()
+    data = st.read(key)
+    if not data:
+        raise HTTPException(
+            404,
+            "内容尚未生成。若使用 CDN 直读，请等每天的定时任务跑完；"
+            "也可调用 POST /api/v1/jobs/daily 手动触发。",
+        )
+    return Response(
+        data,
+        media_type="application/json; charset=utf-8",
+        headers={"Cache-Control": "public, max-age=300", "Access-Control-Allow-Origin": "*"},
     )
 
 
@@ -315,12 +418,15 @@ def version_timeline(
         raise HTTPException(404, "该版本尚未生成音频")
     a = v.audio
     words = [WordTimingOut(**t) for t in (a.timeline or [])]
+    # text 字段是时间轴 cs/ce 的坐标系：段落换行已压成空格。
+    # App 端做逐词高亮必须用它，而不是带换行的 body。
     payload: dict[str, Any] = {
         "version_id": v.id,
         "level_code": v.level_code,
         "lang": v.lang,
         "duration": a.duration_ms / 1000,
-        "text": v.body,
+        "text": normalize_for_tts(v.body),
+        "body": v.body,
         "voice": a.voice,
         "engine": a.engine,
         "word_count": len(words),

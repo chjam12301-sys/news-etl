@@ -38,6 +38,20 @@ class Settings(BaseSettings):
     tts_voice_en: str = "en-US-AriaNeural"
     tts_voice_ja: str = "ja-JP-NanamiNeural"
 
+    # ---- 对象存储（Cloudflare R2 / 任意 S3 兼容）----
+    # 留空则音频存本地磁盘；配全四项即自动切到 R2。
+    # R2 免费额度：10GB 存储/月 + 出网免费
+    r2_bucket: str = ""
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    r2_endpoint: str = ""            # https://<accountid>.r2.cloudflarestorage.com
+    r2_public_base: str = ""         # 自定义公开域名，留空则用签名 URL
+
+    # ---- 静态 JSON 输出（给 CDN / App 直读）----
+    # 开启后每次跑完流水线都会把当天内容导出成 JSON 写到存储里
+    export_json: bool = True
+    public_base_url: str = ""        # App 端访问 JSON 的基地址，如 https://cdn.example.com
+
     # ---- 抓取 ----------------------------------------------------------
     topics: str = "tech,business,science,health,sports,culture,world"
     articles_per_topic: int = 1

@@ -1,6 +1,73 @@
 # 每日英语听力 App · 内容后台 API 文档
 
-> 版本 v1.0.0 · Base URL: `https://<你的域名>` · 交互式文档: `/docs`
+> 版本 v1.1.0 · Base URL: `https://<你的域名>` · 交互式文档: `/docs`
+>
+> **v1.1 变更**：新增静态 JSON 分发（App 可完全不经服务器直读 CDN），
+> 见第 0.5 节。原有 14 个 REST 接口签名不变，App 端无需改动。
+
+## 0.5 · 两种接入方式（推荐用CDN 直读）
+
+### 方式 A：CDN 直读（推荐，无服务器、无冷启动）
+
+配好 R2 后，内容每天自动导出成 JSON，App 直接从 R2 / CDN 拉，**完全不经过我们的服务**。
+访问路径与自建服务一致，只是域名换成 CDN：
+
+| 内容 | CDN 地址 |
+|---|---|
+| 全量索引（首页） | `https://<bucket>.r2.dev/data/index.json` |
+| 某天完整列表 | `https://<bucket>.r2.dev/data/<YYYY-MM-DD>/index.json` |
+| 单版本详情+时间轴 | `https://<bucket>.r2.dev/data/versions/<id>.json` |
+| 音频 | `https://<bucket>.r2.dev/audio/<article_id>/<level>.mp3` |
+
+App 启动时调一次自建服务的 `/api/v1/config`，即可拿到上面这些模板：
+
+```json
+{
+  "json_enabled": true,
+  "base_url": "https://news-etl-audio.abc123.r2.dev",
+  "index_url": "https://news-etl-audio.abc123.r2.dev/data/index.json",
+  "day_index_pattern": "https://news-etl-audio.abc123.r2.dev/data/{date}/index.json",
+  "version_detail_pattern": "https://news-etl-audio.abc123.r2.dev/data/versions/{id}.json",
+  "levels": [ ... 10 个等级 ... ]
+}
+```
+
+**`data/index.json` 结构**
+```json
+{
+  "service": "每日英语听力 · 内容后台",
+  "generated_at": "2026-10-06T21:30:00Z",
+  "latest": {
+    "date": "2026-10-06",
+    "versions": {
+      "en": [ /* 版本摘要，含 detail_url 与 audio */ ],
+      "ja": [ ... ]
+    }
+  },
+  "dates": ["2026-10-06", "2026-10-05"],
+  "levels": [{ "code": "en_a1", "label": "A1 入门", "lang": "en", "level": 1 }],
+  "base_url": "https://news-etl-audio.abc123.r2.dev"
+}
+```
+
+**`data/versions/<id>.json` 结构** = REST 详情接口的全部字段 +
+```json
+{
+  "text": "压平为单行的正文，时间轴的坐标系",
+  "timeline": [ { "i":0, "w":"Scientists", "s":0.1, "e":0.787, "sm":100, "em":787, "cs":0, "ce":10, "si":0 } ]
+}
+```
+
+> ⚠️ **高亮必须用 `text` 字段，不能用 `body`。**
+> `cs/ce` 字符偏移是相对 `text`（段落换行已压成空格）计算的。
+> 直接用带 `\n\n` 的 `body` 去 slice，多段正文一定错位。
+> 这一条已在 `tests/test_core.py::test_timeline_offsets_index_into_spoken_text_not_body` 锁死。
+
+### 方式 B：REST 接口（本地开发 / 需要动态筛选时）
+
+下方第 1–5 节即为 REST 接口，签名与 CDN 方案完全对齐。
+
+---
 
 ## 0. 速览
 
@@ -339,35 +406,51 @@ Article（源新闻）
 
 ## 7. App 端推荐调用顺序
 
+**CDN 模式（推荐，配好 R2 后）**
+
 ```
 启动
- ├─ GET /health                      探活（兼做「后端已唤醒」预热）
- ├─ GET /api/v1/levels               等级字典（缓存，等级筛选器）
- └─ GET /api/v1/topics               主题字典（缓存）
+ ├─ GET /api/v1/config          取回 CDN 地址模板 + 等级字典（永久缓存）
+ └─ GET <cdn>/data/index.json     首页列表（en/ja 分组，每条含 detail_url 与 audio.url）
+       └─ 点进详情
+            └─ GET <detail_url>版本详情（含 timeline、vocab）
+                 └─ 播放 <audio.url>   CDN 直出音频，支持 Range
+```
 
-首页（list）
+等级切换不需要额外请求：`data/<date>/index.json` 里同一篇文章的 10 个等级都在，
+按 `article_id` 过滤即可。
+
+**REST 模式（本地开发）**
+
+```
+启动
+ ├─ GET /health探活
+ ├─ GET /api/v1/levels                等级字典（缓存）
  └─ GET /api/v1/articles/today?lang=en&level=1
        └─ 点进详情
             ├─ GET /api/v1/articles/{article_id}?lang=en&level=1
-            ├─ GET /api/v1/versions/{version_id}/timeline     加载时间轴
-            └─ GET /api/v1/audio/{audio_id}.mp3                流式播放
-
-练习/词汇
- ├─ GET /api/v1/versions/{version_id}          取 vocab[] 做题
- └─ GET /api/v1/articles/{article_id}/levels   切换等级（0 额外请求）
+            ├─ GET /api/v1/versions/{version_id}/timeline
+            └─ GET /api/v1/audio/{audio_id}.mp3
 ```
 
 **缓存建议**
-- `/levels`、`/topics`：版本号不变，永久缓存
-- `today` 列表：按 `(date, lang, level)` 缓存当日结果
-- 音频：交由 URL + `Cache-Control` 与 CDN 处理，App 侧落盘缓存
-- 时间轴：与详情同生命周期，内存缓存即可
+- `/api/v1/config`、`/levels`：内容不变，永久缓存
+- `data/index.json`：CDN 已设 `Cache-Control: 5min`；App 侧按 `(date, lang, level)` 缓存当日结果
+- 音频：交给 CDN + App 本地落盘，不要每次重下
+- 详情 JSON：按 `version_id` 永久缓存（内容不可变）
 
 ---
 
 ## 8. 数据规模估算
 
 - 每天 7 主题 × 1 篇 = **7 篇源新闻 → 70 个改写版本 → 70 段音频**
-- 每段音频约 0.3–0.5 MB（edge-tts 24kbps mp3，40 秒左右）
-- 每天新增 ≈ 30 MB，**每月 ≈ 1 GB**
-- 免费额度提醒：免费 Render 实例磁盘不持久，音频与 DB 需持久盘或外置对象存储，见部署说明
+- 每段音频约 0.3–0.5 MB（edge-tts 24kbps mp3，约 40–100 秒）
+- 每天新增约 30 MB，**每月约 1 GB**
+- JSON 侧：单份详情约 15 KB（其中时间轴约 12 KB），每天 70 份 ≈ 1 MB/月
+
+免费额度对照：
+
+| 存储 | 每月新增 | 免费额度 | 可用 |
+|---|---|---|---|
+| R2 音频 | ~1 GB | 10 GB | ~10 个月 |
+| Neon 库 | ~1 MB | 0.5 GB | 很久 |

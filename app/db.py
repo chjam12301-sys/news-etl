@@ -73,6 +73,7 @@ def init_db() -> None:
         "audio_assets": {
             "boundaries": "JSON",
             "engine": "VARCHAR(32)",
+            "public_url": "TEXT",
         },
     }
     with engine.begin() as conn:
@@ -181,6 +182,8 @@ class AudioAsset(Base):
     voice: Mapped[str] = mapped_column(String(64))
 
     file_path: Mapped[str] = mapped_column(Text)
+    #对象存储上的对外 URL（R2 公开域名或签名 URL）；本地存储时为空
+    public_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
 

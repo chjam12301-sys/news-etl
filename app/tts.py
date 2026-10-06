@@ -85,8 +85,17 @@ def split_sentences(text: str) -> list[str]:
 
 
 def normalize_for_tts(text: str) -> str:
-    """去掉换行并压成单行 —— edge-tts 的 boundary 只给词，段落信息需我们自己补。"""
+    """去掉换行并压成单行 —— edge-tts 的 boundary 只给词，段落信息需我们自己补。
+
+    ⚠️ 时间轴里的 cs/ce 字符偏移是相对这个「压平后」的文本，
+    App 端做逐词高亮时必须用同一份文本（详情 JSON 的 `text` 字段）来 slice，
+    直接用带换行的 body 会错位。
+    """
     return re.sub(r"\s*\n\s*", " ", text).strip()
+
+
+# 语义化别名，便于调用方理解「这个文本才是时间轴的坐标系」
+spoken_text = normalize_for_tts
 
 
 def _tokenize(text: str, lang: str) -> list[tuple[str, int, int]]:

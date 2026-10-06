@@ -1,0 +1,79 @@
+name: 每日内容生成
+
+#北京时间每天 05:00 = UTC 21:00。故意避开整点，错开 GitHub 的调度高峰。
+on:
+  schedule:
+    - cron: '30 21 * * *'
+  workflow_dispatch:
+    inputs:
+      topics:
+        description: '主题（逗号分隔，留空用默认全部）'
+        required: false
+      per_topic:
+        description: '每个主题几篇'
+        required: false
+        default: '1'
+      force:
+        description: '是否强制重建已有内容'
+        required: false
+        default: 'false'
+
+concurrency:
+  group: daily-news
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          pip install -r requirements.txt
+
+      - name: 生成内容（抓取 → 改写 → TTS → 导出）
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
+          PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'gemini' }}
+          TTS_VOICE_EN: ${{ vars.TTS_VOICE_EN || 'en-US-AriaNeural' }}
+          TTS_VOICE_JA: ${{ vars.TTS_VOICE_JA || 'ja-JP-NanamiNeural' }}
+          ARTICLES_PER_TOPIC: ${{ inputs.per_topic || vars.ARTICLES_PER_TOPIC || '1' }}
+          TOPICS: ${{ vars.TOPICS || 'tech,business,science,health,sports,culture,world' }}
+        run: |
+          ARGS="daily --per-topic ${ARTICLES_PER_TOPIC}"
+          if [ -n "${{ inputs.topics }}" ]; then ARGS="$ARGS --topics ${{ inputs.topics }}"; fi
+          if [ "${{ inputs.force }}" = "true" ]; then ARGS="$ARGS --force"; fi
+          echo "执行: python -m app.cli $ARGS"
+          python -m app.cli $ARGS
+
+      - name: 上传失败时的日志
+        if: failure()
+        run: echo "生成失败，请查看上方日志"
+
+      - name: 提交运行记录
+        # 让仓库保持活跃 —— 60 天无活动的仓库会被 GitHub 自动禁用定时任务
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          mkdir -p .runs
+          echo "{\"last_run\":\"$(date -u +%FT%TZ)\",\"status\":\"${{ job.status }}\"}" > .runs/latest.json
+          git add .runs/latest.json
+          git commit -m "chore: 记录任务运行 $(date -u +%FT%TZ)" || echo "无变更可提交"
+          git push
