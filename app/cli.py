@@ -2,12 +2,22 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import asyncio
 import json
 import sys
 
 
 def main() -> int:
+    # CLI 也要输出日志 —— 否则 pipeline/images 的 log.info 全部丢失，
+    # Actions 日志里看不到 [pipe] / [img] 任何痕迹，排查无从下手。
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(name)-10s | %(message)s",
+        datefmt="%H:%M:%S",
+        force=True,
+    )
+
     p = argparse.ArgumentParser(description="每日英语听力内容后台")
     sub = p.add_subparsers(dest="cmd", required=True)
 
