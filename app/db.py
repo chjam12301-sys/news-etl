@@ -69,6 +69,9 @@ def init_db() -> None:
         "article_versions": {
             "reading_minutes": "FLOAT",
             "lead": "TEXT",
+            "title_zh": "VARCHAR(512)",
+            "lead_zh": "TEXT",
+            "paragraphs_zh": "JSON",
             "vocab": "JSON",
         },
         "audio_assets": {
@@ -160,6 +163,12 @@ class ArticleVersion(Base):
     vocab: Mapped[list[Any]] = mapped_column(JSON, default=list)
     # 1-3 句导读
     lead: Mapped[str] = mapped_column(Text, default="")
+
+    # ---- 中文翻译（App 端展示用）----
+    title_zh: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    lead_zh: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 与 paragraphs 一一对应
+    paragraphs_zh: Mapped[list[Any]] = mapped_column(JSON, default=list)
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
 

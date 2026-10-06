@@ -83,22 +83,27 @@ async def _process_article(
             db.delete(v)
         db.flush()
 
-    # 配图：Openverse CC0（方案 B）。失败不阻塞，落到占位块。
+    # 配图：只用 Openverse CC0（方案 B）。
+    # 不使用新闻原图 —— 非 CC0 有版权风险，且热链对方 CDN 易失效。
     if force or article.image_url is None:
-        from .images import find_image, placeholder
+        from .images import find_image
 
         try:
             img = await find_image(article.topic, article.title_original)
             if img:
                 article.image_url = img.url
                 article.image_credit = img.attribution
-                log.info("[img] article_id=%s → %s", article.id, img.url[:70])
+                log.info("[img] article_id=%s → CC0 %s", article.id, img.url[:70])
             else:
+                # 显式清空原图（避免沿用旧的媒体图），由 _image_meta 走渐变占位
                 article.image_url = ""
                 article.image_credit = ""
-                log.info("[img] article_id=%s 未找到 CC0 图，用占位块", article.id)
+                log.info("[img] article_id=%s 未找到 CC0 图，用渐变占位块", article.id)
         except Exception as exc:  # noqa: BLE001
             log.warning("[img] 配图失败: %s", exc)
+            if not getattr(settings, "image_allow_source_fallback", False):
+                article.image_url = ""
+                article.image_credit = ""
         db.flush()
 
     llm = get_llm()
@@ -126,6 +131,9 @@ async def _process_article(
             reading_minutes=_reading_minutes(body, r.lang),
             vocab=r.vocab,
             lead=r.lead,
+            title_zh=r.title_zh,
+            lead_zh=r.lead_zh,
+            paragraphs_zh=r.paragraphs_zh,
         )
         db.add(version)
         db.flush()

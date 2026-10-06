@@ -26,6 +26,10 @@ class RewriteResult:
     paragraphs: list[str]
     vocab: list[dict[str, Any]] = field(default_factory=list)
     lead: str = ""
+    # ---- 中文翻译（App 端要的）----
+    title_zh: str = ""
+    lead_zh: str = ""
+    paragraphs_zh: list[str] = field(default_factory=list)
 
     @property
     def body(self) -> str:
@@ -41,6 +45,7 @@ SYSTEM_PROMPT = (
 
 
 def _user_prompt(topic: str, title: str, source_text: str, spec: LevelSpec) -> str:
+    lang_name = "English" if spec.lang == "en" else "Japanese (日本語)"
     lang_rule = (
         "Write ENTIRELY in English."
         if spec.lang == "en"
@@ -48,6 +53,7 @@ def _user_prompt(topic: str, title: str, source_text: str, spec: LevelSpec) -> s
         "proper nouns or when quoting a source term."
     )
     return f"""SOURCE TOPIC: {topic}
+TARGET LANGUAGE: {lang_name}
 ORIGINAL HEADLINE: {title}
 
 SOURCE TEXT (may be truncated or noisy — infer the facts, never invent new ones):
@@ -69,13 +75,21 @@ Simplify the language, never distort the facts.
 
 OUTPUT FORMAT — return exactly this JSON shape:
 {{
-  "title": "headline rewritten at this level (under 90 characters)",
-  "lead": "1-3 sentences in {spec.lang} that prepare the reader for the article",
-  "paragraphs": ["paragraph 1", "paragraph 2", "..."],
+  "title": "headline rewritten at this level, in {lang_name} (under 90 characters)",
+  "title_zh": "同一标题的中文翻译（口语化，不要直译腔）",
+  "lead": "1-3 sentences in {lang_name} that prepare the reader for the article",
+  "lead_zh": "lead 的中文翻译",
+  "paragraphs": ["paragraph 1 in {lang_name}", "paragraph 2", "..."],
+  "paragraphs_zh": ["与 paragraphs 一一对应的中文翻译", "..."],
   "vocab": [
     {{"word": "...", "pos": "noun|verb|adj|adv|phrase", "zh": "Chinese gloss", "note": "short usage note in Chinese, may be empty"}}
   ]
 }}
+
+ZH REQUIREMENTS
+- `title_zh` / `lead_zh` / `paragraphs_zh` 必须是**简体中文**。
+- 段落数必须与 `paragraphs` 完全一致，一一对应。
+- 翻译要自然、地道，像中文媒体写出来的，不要逐词硬译。
 
 CONSTRAINTS
 - paragraphs: 3 to 6 items, each 40-120 words.
@@ -427,6 +441,14 @@ async def rewrite_article(
         return offline_rewrite(topic, title, source, spec)
 
     title_out = str(data.get("title") or title).strip()[:120]
+
+    # 中文翻译：段落数必须与原文一致，否则丢弃（宁可没有也不要错位）
+    zh_paras = _as_list(data.get("paragraphs_zh"))[:len(paragraphs)]
+    if len(zh_paras) != len(paragraphs):
+        log.warning("[llm] %s 中译段落数不符(%d vs %d)，丢弃中文字段",
+                    spec.code, len(zh_paras), len(paragraphs))
+        zh_paras = []
+
     return RewriteResult(
         level_code=spec.code,
         lang=spec.lang,
@@ -436,6 +458,9 @@ async def rewrite_article(
         paragraphs=paragraphs,
         vocab=_as_vocab(data.get("vocab"), spec.lang, spec.vocab_count),
         lead=str(data.get("lead") or "").strip()[:400],
+        title_zh=str(data.get("title_zh") or "").strip()[:120],
+        lead_zh=str(data.get("lead_zh") or "").strip()[:400],
+        paragraphs_zh=zh_paras,
     )
 
 

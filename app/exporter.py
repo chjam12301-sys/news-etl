@@ -59,17 +59,38 @@ def _audio_meta(v: ArticleVersion, base: str, rev: str = "") -> dict[str, Any] |
 
 
 def _image_meta(a: Article) -> dict[str, Any]:
-    """配图信息。无图时给App 一个可渲染的渐变占位描述。"""
+    """配图信息。
+
+    对外只暴露 **CC0 / Public Domain** 图片（Openverse 抓的，credit 里带署名）。
+    抓不到时返回渐变占位描述，App 可直接渲染色块。
+    非 CC0 的新闻原图不对外输出 —— 商用有版权风险，且热链易失效。
+    """
     from .images import placeholder
 
-    if a.image_url:
+    url = (a.image_url or "").strip()
+    # 双重保险：即使是媒体域名（cdn.arstechnica.net 等）也不对外给
+    if url and _is_cc0_safe(url):
         return {
             "type": "photo",
-            "url": a.image_url,
+            "url": url,
             "credit": a.image_credit or "",
         }
     ph = placeholder(a.topic, a.title_original)
     return {"type": "gradient", **ph}
+
+
+# 已知媒体图床域名（含即视为非 CC0）
+_MEDIA_HOSTS = (
+    "arstechnica", "bbc.", "nytimes", "theguardian", "cnn.", "reuters",
+    "washingtonpost", "bloomberg", "ft.com", "economist", "wsj",
+    "npr.org", "aljazeera", "cnbc", "forbes", "wired", "theverge",
+)
+
+
+def _is_cc0_safe(url: str) -> bool:
+    """粗筛：媒体图床域名一律视为非 CC0。Openverse 结果不在此列表内。"""
+    low = url.lower()
+    return not any(h in low for h in _MEDIA_HOSTS)
 
 
 def _version_summary(v: ArticleVersion, a: Article, base: str, rev: str = "") -> dict[str, Any]:
@@ -81,6 +102,7 @@ def _version_summary(v: ArticleVersion, a: Article, base: str, rev: str = "") ->
         "level": v.level,
         "level_label": v.level_label,
         "title": v.title,
+        "title_zh": v.title_zh or "",
         "topic": a.topic,
         "source": a.source,
         "source_url": a.source_url,
@@ -89,7 +111,9 @@ def _version_summary(v: ArticleVersion, a: Article, base: str, rev: str = "") ->
         "word_count": v.word_count,
         "reading_minutes": v.reading_minutes,
         "lead": v.lead,
+        "lead_zh": v.lead_zh or "",
         "preview": (v.paragraphs[0] if v.paragraphs else "")[:140],
+        "preview_zh": (v.paragraphs_zh[0][:140] if v.paragraphs_zh else ""),
         "has_audio": v.audio is not None,
         "audio": _audio_meta(v, base, rev),
         # 详情地址，App 按需拉取
@@ -107,7 +131,9 @@ def _version_detail(v: ArticleVersion, a: Article, base: str, rev: str = "") -> 
     d.update(
         {
             "paragraphs": v.paragraphs or [],
+            "paragraphs_zh": v.paragraphs_zh or [],
             "body": v.body,
+            "body_zh": "\n\n".join(v.paragraphs_zh) if v.paragraphs_zh else "",
             # 时间轴 cs/ce 的坐标系：段落换行被压成空格后的单行文本。
             # App 端高亮必须用这个字段，不能直接用 body。
             "text": normalize_for_tts(v.body),

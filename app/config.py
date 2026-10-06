@@ -87,10 +87,12 @@ class Settings(BaseSettings):
     export_json: bool = True
     public_base_url: str = ""        # App 端访问 JSON 的基地址，如 https://cdn.example.com
 
-    # ---- 配图 ----
-    # 方案 B：统一走 Openverse（真 CC0 / Public Domain Mark），不用原图，授权最干净。
-    # 找不到时退回渐变占位块（见 images.placeholder）。
+    # ---- 配图（方案 B）----
+    # 统一走 Openverse（真 CC0 / Public Domain Mark），授权最干净、可商用。
+    # 抓不到时退回渐变占位块，绝不使用媒体原图（非 CC0，存在版权风险且热链易失效）。
     image_fetch_enabled: bool = True
+    # 是否允许用新闻原图兜底。默认 False —— 商用 App 应保持关闭。
+    image_allow_source_fallback: bool = False
 
     # ---- 抓取 ----------------------------------------------------------
     topics: str = "tech,business,science,health,sports,culture,world"
