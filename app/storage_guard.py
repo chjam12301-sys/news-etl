@@ -48,7 +48,7 @@ def _list_all_sizes(st) -> int:
 def current_usage_gb(*, refresh: bool = False) -> float:
     """当前存储占用（GB）。"""
     st = get_storage()
-    if st.name != "r2":
+    if getattr(st, "provider", st.name) not in ("r2", "b2"):
         return 0.0
     if refresh or "usage" not in _cache:
         try:
@@ -64,7 +64,7 @@ def current_usage_gb(*, refresh: bool = False) -> float:
 def check_capacity(limit_gb: float = DEFAULT_LIMIT_GB) -> None:
     """写入前调用。超限则抛 StorageQuotaExceeded。"""
     st = get_storage()
-    if st.name != "r2":
+    if getattr(st, "provider", st.name) not in ("r2", "b2"):
         return
     used = current_usage_gb()
     if used >= limit_gb:
@@ -81,7 +81,7 @@ def auto_clean(keep_days: int = 60) -> dict[str, int]:
     import datetime as dt
 
     st = get_storage()
-    if st.name != "r2":
+    if getattr(st, "provider", st.name) not in ("r2", "b2"):
         return {"deleted": 0, "bytes": 0}
 
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=keep_days)

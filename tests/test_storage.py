@@ -225,9 +225,16 @@ def test_get_storage_defaults_to_local(monkeypatch, tmp_path):
     reset_storage()
 
 
-def test_local_storage_is_default_after_import():
+def test_local_storage_is_default_after_import(monkeypatch, tmp_path):
+    """没有任何云存储密钥时，必须回退本地，绝不能因漏配而崩。"""
+    from app import config as config_mod
+
     reset_storage()
+    s = config_mod.get_settings()
+    for k in ("r2_bucket", "r2_access_key_id", "r2_secret_access_key", "r2_endpoint",
+              "b2_bucket", "b2_access_key_id", "b2_secret_access_key", "b2_endpoint"):
+        monkeypatch.setattr(s, k, "", raising=False)
+
     st = get_storage()
-    # 未配 R2 密钥时必须是本地，绝不能因为漏配而崩
-    assert isinstance(st, LocalStorage)
+    assert isinstance(st, LocalStorage), f"未配密钥时回退失败，得到 {type(st).__name__}"
     reset_storage()

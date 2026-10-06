@@ -51,6 +51,23 @@ class Settings(BaseSettings):
     r2_endpoint: str = ""            # https://<accountid>.r2.cloudflarestorage.com
     r2_public_base: str = ""         # 自定义公开域名，留空则用签名 URL
 
+    # ---- 存储后端选择 ----
+    # r2    : Cloudflare R2（S3 兼容）
+    # b2    : Backblaze B2（S3 兼容，用 keyId:applicationKey 两段式认证）
+    # local : 本地磁盘
+    # 注：部分网络环境到 Cloudflare S3 API 域名不可达，此时用 b2。
+    storage_backend: str = ""
+
+    # Backblaze B2（Cloudflare R2 走不通时的替代，10GB 免费）
+    b2_bucket: str = ""
+    b2_access_key_id: str = ""           # B2 叫 Key ID
+    b2_secret_access_key: str = ""       # B2 叫 Application Key
+    b2_endpoint: str = ""                # https://s3.us-west-004.backblazeb2.com
+    b2_public_base: str = ""             # https://f000.backblazeb2.com/file/<bucket>
+
+    # 存储容量硬上限（GB）。免费额度留余量，超限拒绝写入。
+    storage_limit_gb: float = 8.0
+
 # ---- 静态 JSON 输出（给 CDN / App 直读）----
     # 开启后每次跑完流水线都会把当天内容导出成 JSON 写到存储里
     export_json: bool = True

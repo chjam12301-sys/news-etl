@@ -155,12 +155,17 @@ def _put_via_awscli(key: str, path: str, content_type: str | None) -> bool:
 
 
 class R2Storage:
-    """Cloudflare R2（S3 兼容）实现，使用 boto3。
+    """Cloudflare R2 / Backblaze B2（S3 兼容）实现，使用 boto3。
 
-    R2 免费额度：10GB 存储/月 + 100万次 ClassA + 1000万次 ClassB + 出网免费。
+    两家都是 S3 协议，差异仅在：
+    - R2：region="auto"，公开域名形如 https://pub-xxx.r2.dev
+    - B2：region 从 endpoint 域名推导（us-west-004 等），
+      公开域名形如 https://f000.backblazeb2.com/file/<bucket>
+
+    免费额度：R2 10GB/月+出网免费；B2 10GB。
     """
 
-    name = "r2"
+    name = "r2"  # 实例化后按 provider 覆盖为 "r2" 或 "b2"
 
     def __init__(
         self,
@@ -171,15 +176,18 @@ class R2Storage:
         *,
         public_base: str = "",
         region: str = "auto",
+        provider: str = "r2",
     ) -> None:
         import boto3  # 延迟导入：本地开发无需安装
 
         self.bucket = bucket
+        self.provider = provider
+        self.name = provider
         self.public_base = public_base.rstrip("/")
 
-        # GitHub Actions 的 runner 走自有 TLS 栈，握手 Cloudflare R2 时可能
-        # 报 SSLV3_ALERT_HANDSHAKE_FAILURE。这里显式指定 certifi 的 CA 包，
-        # 避免 botocore 拿到不完整证书链；失败则退回 botocore 默认行为。
+        # R2 与 B2 都是 S3 兼容，差异主要在：
+        # - region：R2 用 "auto"，B2 用 "us-west-004" 等
+        # - 公开下载地址格式不同
         config = None
         try:
             from botocore.config import Config
@@ -320,29 +328,67 @@ _storage: Storage | None = None
 
 
 def get_storage() -> Storage:
-    """按配置返回存储实现；未配 R2 则用本地。"""
+    """按配置返回存储实现。
+
+    优先级：显式 STORAGE_BACKEND > 自动探测（B2 → R2 → 本地）。
+    无论配了什么，任何异常都回退本地，保证内容生成永不中断。
+    """
     global _storage
     if _storage is not None:
         return _storage
 
-    bucket = getattr(settings, "r2_bucket", "")
-    key_id = getattr(settings, "r2_access_key_id", "")
-    secret = getattr(settings, "r2_secret_access_key", "")
-    endpoint = getattr(settings, "r2_endpoint", "")
+    backend = (getattr(settings, "storage_backend", "") or "").lower()
 
-    if bucket and key_id and secret and endpoint:
+    def _try_b2() -> Storage | None:
+        bucket = getattr(settings, "b2_bucket", "")
+        key_id = getattr(settings, "b2_access_key_id", "")
+        secret = getattr(settings, "b2_secret_access_key", "")
+        endpoint = getattr(settings, "b2_endpoint", "")
+        if not (bucket and key_id and secret and endpoint):
+            return None
+        # B2 的 region 就写在 endpoint 域名里（s3.us-west-004.…）
+        region = "us-west-004"
+        for part in endpoint.replace("https://", "").split("."):
+            if part.startswith("s3."):
+                region = part[3:]
+                break
+        return R2Storage(
+            bucket=bucket,
+            access_key=key_id,
+            secret_key=secret,
+            endpoint=endpoint,
+            public_base=getattr(settings, "b2_public_base", "") or "",
+            region=region,
+            provider="b2",
+        )
+
+    def _try_r2() -> Storage | None:
+        bucket = getattr(settings, "r2_bucket", "")
+        key_id = getattr(settings, "r2_access_key_id", "")
+        secret = getattr(settings, "r2_secret_access_key", "")
+        endpoint = getattr(settings, "r2_endpoint", "")
+        if not (bucket and key_id and secret and endpoint):
+            return None
+        return R2Storage(
+            bucket=bucket,
+            access_key=key_id,
+            secret_key=secret,
+            endpoint=endpoint,
+            public_base=getattr(settings, "r2_public_base", "") or "",
+            provider="r2",
+        )
+
+    order = {"b2": [_try_b2, _try_r2], "r2": [_try_r2, _try_b2]}.get(backend, [_try_b2, _try_r2])
+    for factory in order:
         try:
-            _storage = R2Storage(
-                bucket=bucket,
-                access_key=key_id,
-                secret_key=secret,
-                endpoint=endpoint,
-                public_base=getattr(settings, "r2_public_base", "") or "",
-            )
-            log.info("[storage] 使用 R2, bucket=%s", bucket)
-            return _storage
+            st = factory()
         except Exception as exc:  # noqa: BLE001
-            log.error("[storage] R2 初始化失败(%s)，回退本地", exc)
+            log.error("[storage] %s 初始化失败: %s", getattr(st, "provider", "?"), exc)
+            continue
+        if st is not None:
+            _storage = st
+            log.info("[storage] 使用 %s, bucket=%s", st.provider, st.bucket)
+            return _storage
 
     _storage = LocalStorage(settings.data_path / "storage")
     log.info("[storage] 使用本地目录 %s", _storage.root)
