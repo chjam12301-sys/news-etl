@@ -1,16 +1,26 @@
 # 每日英语听力 · 内容 API 文档
 
-> **Base URL**（首页用这个，必须加时间戳）
+> 🔴 **必须固定 commit，不要用 `@main`**
+>
+> jsDelivr 对分支名（`@main`）缓存较久，会返回几小时前的旧数据，
+> 表现为「详情里没有timeline」。四个节点实测：`cdn` / `fastly` / `gcore` 都返回
+> 旧版（timeline=0），只有 `@<commit>` 返回正确数据。
+>
+> **当前内容版本：`587e7ac`**
+>
 > ```
-> https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@main/content
+> https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@587e7ac/content/index.json
 > ```
 >
-> 详情与音频**不要自己拼路径** —— 直接用 `index.json` 里返回的
-> `detail_url` 和 `audio.url`，它们已固定到具体 commit，不受 CDN 缓存影响。
+> 索引里的 `detail_url` / `audio.url` **都已固定到 commit**，
+> 直接用即可、可永久缓存。全部数据在 CDN 上，无需服务器、无需鉴权。
 >
-> 全部数据在 CDN 上，**无需服务器、无需鉴权**。
 > OpenAPI 规范见 `openapi-cdn.json`，可导入 Postman / Apifox 生成客户端。
-
+>
+> **内容更新后 SHA 会变**，查当前版本：
+> ```
+> https://github.com/chjam12301-sys/news-etl/commits/main
+> ```
 ---
 
 ## 🔴 先看这两个坑
@@ -25,36 +35,12 @@ detail.body.slice(w.cs, w.ce)            // ❌ 多段正文一定跳字
 `text` 是段落换行**压成空格**后的单行版本，时间轴的 `cs/ce` 就是按它算的。
 `body` 保留了 `\n\n`，用它做偏移会错位。实测 189 词零错位，该契约有测试锁死。
 
-### 坑二：`index.json` 必须绕过缓存
-
-**只有 `index.json` 需要处理缓存**，因为里面给出的 `detail_url` 与 `audio.url`
-**已经固定到具体的 commit SHA**，不会被 CDN 缓存影响。
-
-```javascript
-//✅ 正确：给 index.json 加时间戳
-const index = await fetch(`${BASE}/data/index.json?t=${Date.now()}`)
-  .then(r => r.json());
-
-// 然后直接用 index 里的链接，无需任何额外处理
-const detail = await fetch(index.latest.versions.en[0].detail_url).then(r => r.json());
-```
-
-| 内容 | 链接里是 | 会变吗 | 缓存策略 |
-|---|---|---|---|
-| `data/index.json` | `@main` | 每天更新 | **必须加 `?t=`** |
-| 详情 JSON | `@<commit>` | **不变** | 按 `version_id` 永久缓存 |
-| 音频 | `@<commit>` | **不变** | 落盘永久缓存 |
-
-> **为什么强调这点**：jsDelivr 对分支名 `@main` 缓存较久（实测四个 CDN 节点
-> 有三个返回旧版数据），而客户端一旦从旧 `index.json` 里拿到 `@main` 的链接，
-> 后续所有请求都会持续拿到无时间轴的旧详情。改成 SHA 后此问题消失。
-
 ---
 
 ## 一、三步接入
 
 ```javascript
-const BASE = "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@main/content";
+const BASE = "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@<commit>/content";  // ← commit 见文档开头
 
 // ① 首页列表（必须加时间戳绕过 CDN 缓存）
 const index = await fetch(`${BASE}/data/index.json?t=${Date.now()}`).then(r => r.json());
@@ -77,14 +63,14 @@ player.src = item.audio.url;
 
 ## 二、首页索引
 
-### `GET /data/index.json`
+### `GET /index.json`（等价于 `/data/index.json`）
 
 ```json
 {
   "service": "每日英语听力 · 内容后台",
   "generated_at": "2026-10-06T15:16:47+00:00",
   "dates": ["2026-10-06"],
-  "base_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@main/content",
+  "base_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@587e7ac/content",
   "index_url": ".../data/index.json",
   "levels": [
     { "code": "en_a1", "label": "A1 入门", "lang": "en", "level": 1 },
@@ -321,10 +307,10 @@ function render(detail, t) {
 
 ```
 App 启动
- ├─ GET /data/index.json首页 + 等级字典
+ ├─ GET /index.json             首页 + 等级字典（SHA 固定）
  │
  ├─ 首页（list）
- │    └─ 用 latest.versions.en / .ja 渲染
+ │    └─ 用 index.latest.versions.en / .ja 渲染
  │       每条自带 image / audio.url / detail_url
  │
  └─ 点进详情
@@ -363,15 +349,15 @@ App 启动
 
 ## 十二、一份真实响应
 
-`GET /data/index.json`（实际数据，无省略）：
+`GET /index.json`（实际数据，无省略）：
 
 ```json
 {
   "service": "每日英语听力 · 内容后台",
   "generated_at": "2026-10-06T15:16:47+00:00",
   "dates": ["2026-10-06"],
-  "base_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@main/content",
-  "index_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@main/content/data/index.json",
+  "base_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@587e7ac/content",
+  "index_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@587e7ac/content/data/index.json",
   "levels": [
     { "code": "en_a1", "label": "A1 入门",   "lang": "en", "level": 1 },
     { "code": "en_a2", "label": "A2 初级",   "lang": "en", "level": 2 },
@@ -412,7 +398,7 @@ App 启动
           "has_audio": true,
           "audio": {
             "id": 1,
-            "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@main/content/audio/1/en_a1.mp3",
+            "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@587e7ac/content/audio/1/en_a1.mp3",
             "duration": 73.587,
             "size_bytes": 445248,
             "engine": "edge-tts",
@@ -420,7 +406,7 @@ App 启动
             "word_count": 189,
             "has_timeline": true
           },
-          "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@main/content/data/versions/1.json"
+          "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@587e7ac/content/data/versions/1.json"
         }
       ],
       "ja": []
@@ -433,7 +419,7 @@ App 启动
 
 ## 十三、接入自检清单
 
-- [ ] 拉`index.json` 时加了 `?t=` 时间戳
+- [ ] Base URL 用的是 commit SHA，**不是** `@main`
 - [ ] `index.latest.versions.en.length === 5`
 - [ ] `audio.url` 能播放，且 `duration` 与实际时长一致
 - [ ] `detail.timeline.length === item.audio.word_count`
