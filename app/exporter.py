@@ -40,9 +40,11 @@ def _audio_meta(v: ArticleVersion, base: str, rev: str = "") -> dict[str, Any] |
     a = v.audio
     if not a:
         return None
-    # public_url 存的是完整 CDN 地址（含 content/ 前缀），优先用它
-    url = a.public_url if (a.public_url and a.public_url.startswith("http")) else (
-        f"{base}/audio/{v.article_id}/{v.level_code}.mp3" if base else f"/api/v1/audio/{a.id}.mp3"
+    # 不用 a.public_url —— 它是入库时写的旧地址（可能还带 @main）。
+    # 统一用本次导出的 base（已替换成 commit SHA），保证 URL 与本次提交一致。
+    url = (
+        f"{base}/audio/{v.article_id}/{v.level_code}.mp3"
+        if base else f"/api/v1/audio/{a.id}.mp3"
     )
     return {
         "id": a.id,
