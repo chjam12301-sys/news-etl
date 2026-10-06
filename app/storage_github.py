@@ -149,8 +149,22 @@ class GitHubStorage:
             if f.is_file()
         ]
 
-    def public_url(self, key: str) -> str:
-        return f"{self.cdn_base}/{CONTENT_DIR}/{key.lstrip('/')}"
+    def public_url(self, key: str, version: str = "") -> str:
+        """生成公开 URL。
+
+        `version` 通常传commit SHA。jsDelivr 按「ref + 路径」做缓存，
+        用 commit SHA 而非分支名，可彻底规避 @main 的缓存滞后问题
+        （实测 @main 会返回旧版：timeline 为空，而 @<sha> 是最新的）。
+        """
+        base = self.cdn_base
+        if version and "@main" in base:
+            base = base.replace("@main", f"@{version}")
+        return f"{base}/{CONTENT_DIR}/{key.lstrip('/')}"
+
+    def current_ref(self) -> str:
+        """当前仓库的 commit SHA（短），用作 cache-buster。"""
+        r = self._git("rev-parse", "--short", "HEAD", check=False)
+        return r.stdout.strip()
 
     def iter_prefix(self, prefix: str) -> list[StoredObject]:
         return [

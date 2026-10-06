@@ -36,13 +36,13 @@ log = logging.getLogger("exporter")
 MAX_DAYS_IN_INDEX = 60
 
 
-def _audio_meta(v: ArticleVersion, base: str) -> dict[str, Any] | None:
+def _audio_meta(v: ArticleVersion, base: str, rev: str = "") -> dict[str, Any] | None:
     a = v.audio
     if not a:
         return None
     # public_url 存的是完整 CDN 地址（含 content/ 前缀），优先用它
     url = a.public_url if (a.public_url and a.public_url.startswith("http")) else (
-        f"{base}/audio/1/{v.level_code}.mp3" if base else f"/api/v1/audio/{a.id}.mp3"
+        f"{base}/audio/{v.article_id}/{v.level_code}.mp3" if base else f"/api/v1/audio/{a.id}.mp3"
     )
     return {
         "id": a.id,
@@ -70,7 +70,7 @@ def _image_meta(a: Article) -> dict[str, Any]:
     return {"type": "gradient", **ph}
 
 
-def _version_summary(v: ArticleVersion, a: Article, base: str) -> dict[str, Any]:
+def _version_summary(v: ArticleVersion, a: Article, base: str, rev: str = "") -> dict[str, Any]:
     return {
         "version_id": v.id,
         "article_id": v.article_id,
@@ -89,7 +89,7 @@ def _version_summary(v: ArticleVersion, a: Article, base: str) -> dict[str, Any]
         "lead": v.lead,
         "preview": (v.paragraphs[0] if v.paragraphs else "")[:140],
         "has_audio": v.audio is not None,
-        "audio": _audio_meta(v, base),
+        "audio": _audio_meta(v, base, rev),
         # 详情地址，App 按需拉取
         "detail_url": (
             f"{base}/data/versions/{v.id}.json" if base
@@ -98,10 +98,10 @@ def _version_summary(v: ArticleVersion, a: Article, base: str) -> dict[str, Any]
     }
 
 
-def _version_detail(v: ArticleVersion, a: Article, base: str) -> dict[str, Any]:
+def _version_detail(v: ArticleVersion, a: Article, base: str, rev: str = "") -> dict[str, Any]:
     from .tts import normalize_for_tts
 
-    d = _version_summary(v, a, base)
+    d = _version_summary(v, a, base, rev)
     d.update(
         {
             "paragraphs": v.paragraphs or [],
@@ -121,12 +121,29 @@ def _version_detail(v: ArticleVersion, a: Article, base: str) -> dict[str, Any]:
     return d
 
 
+
+def _cdn_base_with_rev(storage, base: str) -> tuple[str, str]:
+    """把 CDN 基址里的 @main 换成当前 commit SHA。
+
+    jsDelivr 对分支名（@main）会缓存较久，实测客户端会拿到旧版数据
+    （timeline 为空）。改用 commit SHA 后，每次内容更新都是全新 URL。
+    """
+    rev = ""
+    if getattr(storage, "provider", "") == "github":
+        try:
+            rev = storage.current_ref()
+        except Exception:  # noqa: BLE001
+            rev = ""
+        if rev and "@main" in base:
+            base = base.replace("@main", f"@{rev}")
+    return base, rev
+
 def export_version(db: Session, v: ArticleVersion, a: Article) -> str:
     """导出单个版本详情（含时间轴）。返回存储 key。"""
     st = get_storage()
-    base = (settings.public_base_url or "").rstrip("/")
+    base, rev = _cdn_base_with_rev(st, (settings.public_base_url or "").rstrip("/"))
     key = version_key(v.id)
-    payload = _version_detail(v, a, base)
+    payload = _version_detail(v, a, base, rev)
     st.put(key, json.dumps(payload, ensure_ascii=False).encode("utf-8"), content_type="application/json; charset=utf-8")
     return key
 
@@ -134,7 +151,7 @@ def export_version(db: Session, v: ArticleVersion, a: Article) -> str:
 def export_day(db: Session, date: dt.date) -> str:
     """导出某天的完整列表。按 语言/等级 分组，App 可整日缓存。"""
     st = get_storage()
-    base = (settings.public_base_url or "").rstrip("/")
+    base, rev = _cdn_base_with_rev(st, (settings.public_base_url or "").rstrip("/"))
 
     rows = db.execute(
         select(ArticleVersion, Article)
@@ -163,7 +180,7 @@ def export_day(db: Session, date: dt.date) -> str:
             articles[a.id] = art
 
         grouped.setdefault(v.lang, {}).setdefault(v.level_code, []).append(
-            _version_summary(v, a, base)
+            _version_summary(v, a, base, rev)
         )
         export_version(db, v, a)
 
@@ -184,7 +201,7 @@ def export_day(db: Session, date: dt.date) -> str:
 def export_index(db: Session, days: int = MAX_DAYS_IN_INDEX) -> str:
     """导出全量索引。首页只需要这个文件。"""
     st = get_storage()
-    base = (settings.public_base_url or "").rstrip("/")
+    base, rev = _cdn_base_with_rev(st, (settings.public_base_url or "").rstrip("/"))
 
     dates = db.execute(
         select(Article.published_date)
@@ -206,7 +223,7 @@ def export_index(db: Session, days: int = MAX_DAYS_IN_INDEX) -> str:
         ).all()
         by_lang: dict[str, list[dict[str, Any]]] = {}
         for v, a in rows:
-            by_lang.setdefault(v.lang, []).append(_version_summary(v, a, base))
+            by_lang.setdefault(v.lang, []).append(_version_summary(v, a, base, rev))
         latest = {"date": d.isoformat(), "versions": by_lang}
 
     payload = {
