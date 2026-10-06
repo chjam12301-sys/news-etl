@@ -268,6 +268,23 @@ async def run_daily(
         db.commit()
         db.close()
 
+    # GitHub 存储：把产物提交上去（Actions 里 content/ 必须在 commit 里才会被 CDN 收录）
+    if getattr(get_storage(), "provider", "") == "github":
+        try:
+            st = get_storage()
+            pushed = st.commit(
+                f"content: {totals.get('versions', 0)} 版本 / "
+                f"{totals.get('audios', 0)} 音频（{job.finished_at:%Y-%m-%d %H:%M}）"
+            )
+            totals["git_pushed"] = bool(pushed)
+            keep = getattr(settings, "github_keep_days", 14)
+            r = st.prune(keep)
+            totals["git_pruned"] = r["deleted"]
+            log.info("[pipe] 已提交 GitHub：pushed=%s pruned=%s", pushed, r["deleted"])
+        except Exception as exc:  # noqa: BLE001
+            log.error("[pipe] GitHub 提交失败: %s", exc)
+            totals["git_error"] = str(exc)[:200]
+
     log.info("[pipe] 结束 %s", totals)
     return {
         "status": job.status,

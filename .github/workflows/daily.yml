@@ -1,24 +1,24 @@
 name: 每日内容生成
 
-#北京时间每天 05:00 = UTC 21:00。故意避开整点，错开 GitHub 的调度高峰。
+# 北京时间每天 05:30 = UTC 21:30。故意避开整点，错开 GitHub 调度高峰。
 on:
   schedule:
     - cron: '30 21 * * *'
   workflow_dispatch:
     inputs:
       topics:
-        description: '主题（逗号分隔，留空用默认全部）'
+        description: '主题（逗号分隔，留空=全部 7 个）'
         required: false
       per_topic:
         description: '每个主题几篇'
         required: false
         default: '1'
       force:
-        description: '是否强制重建已有内容'
+        description: '强制重建（加中文译文或改 prompt 后用）'
         required: false
-        default: 'false'
+        default: 'true'
 
-# Free 计划同一时间只允许 1 个并发任务
+# Free 计划同一时间只允许 1 个并发
 concurrency:
   group: daily-news
   cancel-in-progress: false
@@ -26,10 +26,16 @@ concurrency:
 jobs:
   generate:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
+
+    permissions:
+      contents: write          # 推送 content/
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0# 完整历史，便于取 commit SHA 做 CDN cache-buster
+          persist-credentials: true
 
       - uses: actions/setup-python@v5
         with:
@@ -39,44 +45,27 @@ jobs:
       - name: 安装依赖
         run: pip install -r requirements.txt
 
-      - name: 安装 AWS CLI（R2 上传备用通道）
-        # Ubuntu 24.04 源里没有 awscli 包，须用官方 v2 安装脚本。
-        # runner 的 Python TLS 栈与 Cloudflare R2 握手失败，awscli 用 OpenSSL 可绕过。
-        run: |
-          set -e
-          curl -fsSL -o /tmp/awscliv2.zip \
-            https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.27.49.zip
-          unzip -q -o /tmp/awscliv2.zip -d /tmp/awscli
-          sudo /tmp/awscli/aws/install --update
-          aws --version
-
-      - name: R2 连通性自检
-        env:
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
+      - name: 网络与依赖自检
         run: |
           set +e
-          echo "probe" > /tmp/probe.txt
-          echo "--- [1] boto3 ---"
-          python -c "
-          import os, boto3
-          from botocore.config import Config
-          c = boto3.client('s3', endpoint_url=os.environ['R2_ENDPOINT'],
-              aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
-              aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
-              region_name='auto',
-              config=Config(signature_version='s3v4', s3={'addressing_style':'path'}))
-          c.put_object(Bucket=os.environ['R2_BUCKET'], Key='_probe_boto3.txt', Body=b'probe')
-          print('boto3: OK')
-          " 2>&1 | tail -3
-          echo "--- [2] aws cli ---"
-          aws s3 cp /tmp/probe.txt "s3://${R2_BUCKET}/_probe_cli.txt" \
-            --endpoint-url "${R2_ENDPOINT}" --no-progress 2>&1 | tail -2
-          aws s3 cp "s3://${R2_BUCKET}/_probe_cli.txt" /tmp/back.txt \
-            --endpoint-url "${R2_ENDPOINT}" --no-progress 2>&1 | tail -2 && echo "awscli: OK"
+          echo "--- Openverse（CC0 配图源）---"
+          curl -s -o /dev/null -w "  api.openverse.org: HTTP %{http_code}  %{time_total}s\n" \
+            --max-time 20 "https://api.openverse.org/v1/images/?q=test&page_size=1"
+          echo "--- DeepSeek ---"
+          curl -s -o /dev/null -w "  api.deepseek.com: HTTP %{http_code}\n" \
+            --max-time 20 https://api.deepseek.com/v1/models
+          echo "--- Neon（数据库）---"
+          python - <<'PY'
+          import os
+          from sqlalchemy import create_engine, text
+          try:
+              e = create_engine(os.environ["DATABASE_URL"], connect_args={"connect_timeout": 15})
+              with e.connect() as c:
+                  c.execute(text("select 1"))
+              print("  Neon: 连接正常")
+          except Exception as exc:
+              print(f"  Neon: {type(exc).__name__} {str(exc)[:90]}")
+          PY
           set -e
 
       - name: 组装参数
@@ -87,34 +76,71 @@ jobs:
           IN_FORCE: ${{ inputs.force }}
         run: |
           ARGS="daily --per-topic ${IN_PER_TOPIC:-1}"
-          if [ -n "${IN_TOPICS}" ]; then
-            ARGS="$ARGS --topics ${IN_TOPICS}"
-          fi
-          if [ "${IN_FORCE}" = "true" ]; then
-            ARGS="$ARGS --force"
-          fi
+          if [ -n "${IN_TOPICS}" ]; then ARGS="$ARGS --topics ${IN_TOPICS}"; fi
+          if [ "${IN_FORCE}" = "true" ]; then ARGS="$ARGS --force"; fi
           echo "args=$ARGS" >> "$GITHUB_OUTPUT"
           echo "将要执行: python -m app.cli $ARGS"
 
-      - name: 生成内容（抓取 → 改写 → TTS → 导出）
+      - name: 生成内容（抓取 → 中英日改写 → TTS+时间轴 → 导出 → 提交）
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
-          DEEPSEEK_MODEL: deepseek-chat
+          # 存储：GitHub 仓库 + jsDelivr CDN（runner 到 R2/B2/Supabase 的上传 API 皆不通）
+          STORAGE_BACKEND: github
+          GITHUB_CONTENT_REPO: ${{ github.repository }}
+          GITHUB_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_KEEP_DAYS: "14"
+          PUBLIC_BASE_URL: https://cdn.jsdelivr.net/gh/${{ github.repository }}@main/content
+
+          # 数据库
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
-          PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
+
+          # LLM（中文译文靠它）
           LLM_PROVIDER: deepseek
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_BASE_URL: https://api.deepseek.com/v1
+          DEEPSEEK_MODEL: deepseek-chat
+
+          # TTS
+          TTS_ENABLED: "true"
           TTS_VOICE_EN: en-US-AriaNeural
           TTS_VOICE_JA: ja-JP-NanamiNeural
-          TOPICS: tech,business,science,health,sports,culture,world
+
+          # 配图（方案 B：Openverse CC0，禁止媒体原图兜底）
+          IMAGE_FETCH_ENABLED: "true"
+          IMAGE_ALLOW_SOURCE_FALLBACK: "false"
+
+          # 导出
+          EXPORT_JSON: "true"
         run: python -m app.cli ${{ steps.args.outputs.args }}
+
+      - name: 校验产物
+        run: |
+          set +e
+          echo "--- content/ 产物 ---"
+          ls -1 content/ 2>/dev/null || echo "(无)"
+          echo "音频: $(find content/audio -name '*.mp3' 2>/dev/null | wc -l) 个"
+          echo "详情JSON: $(find content/data/versions -name '*.json' 2>/dev/null | wc -l) 份"
+          echo "仓库体积: $(du -sh content 2>/dev/null | cut -f1)"
+          echo "--- 自检：中译与时间轴 ---"
+          python - <<'PY'
+          import json, glob
+          files = sorted(glob.glob("content/data/versions/*.json"))[:4]
+          if not files:
+              print("  ✗ 没有产物"); raise SystemExit
+          for f in files:
+              d = json.load(open(f, encoding="utf-8"))
+              tl = d.get("timeline") or []
+              zh = d.get("paragraphs_zh") or []
+              paras = d.get("paragraphs") or []
+              bad = 0
+              if tl:
+                  t = d["text"]
+                  bad = sum(1 for w in tl if t[w["cs"]:w["ce"]] != w["w"])
+              print(f"  {d['level_code']:7} 时间轴{len(tl):4}词 错位{bad}  "
+                    f"中译{len(zh)}/{len(paras)}段  "
+                    f"title={'有' if d.get('title_zh') else '无'}  "
+                    f"配图={(d.get('image') or {}).get('type')}")
+          PY
+          set -e
 
       - name: 记录本次运行
         # 让仓库保持活跃 —— 60 天无活动的仓库会被 GitHub 自动禁用定时任务
@@ -127,5 +153,5 @@ jobs:
           mkdir -p .runs
           printf '{"last_run":"%s","status":"%s"}\n' "$(date -u +%FT%TZ)" "$JOB_STATUS" > .runs/latest.json
           git add -A .runs
-          git commit -m "chore: 记录任务运行 $(date -u +%FT%TZ)" || echo "无变更可提交"
-          git push || echo "推送失败（不影响内容生成结果）"
+          git commit -m "chore: 记录任务运行 $(date -u +%FT%TZ)" || echo "无变更"
+          git push || echo "推送失败"
