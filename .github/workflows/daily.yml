@@ -37,7 +37,40 @@ jobs:
           cache: pip
 
       - name: 安装依赖
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          # R2 上传的备用通道（runner 的 Python TLS 与 Cloudflare 握手失败时启用）
+          sudo apt-get update -qq && sudo apt-get install -y -qq awscli
+          aws --version
+
+      - name: R2 连通性自检
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          set +e
+          echo "probe" > /tmp/probe.txt
+          echo "--- [1] boto3 ---"
+          python -c "
+          import os, boto3
+          from botocore.config import Config
+          c = boto3.client('s3', endpoint_url=os.environ['R2_ENDPOINT'],
+              aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
+              aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY'],
+              region_name='auto',
+              config=Config(signature_version='s3v4', s3={'addressing_style':'path'}))
+          c.put_object(Bucket=os.environ['R2_BUCKET'], Key='_probe_boto3.txt', Body=b'probe')
+          print('boto3: OK')
+          " 2>&1 | tail -3
+          echo "--- [2] aws cli ---"
+          aws s3 cp /tmp/probe.txt "s3://${R2_BUCKET}/_probe_cli.txt" \
+            --endpoint-url "${R2_ENDPOINT}" --no-progress 2>&1 | tail -2
+          aws s3 cp "s3://${R2_BUCKET}/_probe_cli.txt" /tmp/back.txt \
+            --endpoint-url "${R2_ENDPOINT}" --no-progress 2>&1 | tail -2 && echo "awscli: OK"
+          set -e
 
       - name: 组装参数
         id: args

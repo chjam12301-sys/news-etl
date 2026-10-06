@@ -115,6 +115,45 @@ class LocalStorage:
         ]
 
 
+def _put_via_awscli(key: str, path: str, content_type: str | None) -> bool:
+    """用 aws cli 上传。GitHub Actions runner 的 Python TLS 栈与 R2
+    握手失败（SSLV3_ALERT_HANDSHAKE_FAILURE），而 aws cli 用 OpenSSL，
+    通常不受影响。作为备用通道。"""
+    import os
+    import subprocess
+    import tempfile
+
+    endpoint = os.environ.get("R2_ENDPOINT", "")
+    bucket = os.environ.get("R2_BUCKET", "")
+    if not endpoint or not bucket:
+        return False
+
+    env = dict(os.environ)
+    env.update(
+        AWS_ACCESS_KEY_ID=os.environ.get("R2_ACCESS_KEY_ID", ""),
+        AWS_SECRET_ACCESS_KEY=os.environ.get("R2_SECRET_ACCESS_KEY", ""),
+        AWS_DEFAULT_REGION="auto",
+    )
+    cmd = [
+        "aws", "s3", "cp", path, f"s3://{bucket}/{key}",
+        "--endpoint-url", endpoint,
+        "--no-progress",
+        "--cache-control", "public, max-age=31536000, immutable",
+    ]
+    if content_type:
+        cmd += ["--content-type", content_type]
+    try:
+        r = subprocess.run(cmd, env=env, capture_output=True, timeout=120)
+        if r.returncode == 0:
+            return True
+        log.warning("[r2] aws cli 上传失败: %s", r.stderr.decode()[:200])
+    except FileNotFoundError:
+        log.info("[r2] 未安装 aws cli")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[r2] aws cli 调用异常: %s", exc)
+    return False
+
+
 class R2Storage:
     """Cloudflare R2（S3 兼容）实现，使用 boto3。
 
@@ -178,25 +217,46 @@ class R2Storage:
             self.client = boto3.client("s3", **kwargs)
 
     def put(self, key: str, data: bytes, *, content_type: str | None = None) -> StoredObject:
-        """写入对象。SSL/网络类错误自动重试，最终仍失败则抛出。"""
+        """写入对象。
+
+        主通道用 boto3；若 TLS 握手失败（GitHub Actions runner 常见），
+        自动降级到 aws cli —— 它的TLS 由 OpenSSL 实现，能绕开该问题。
+        """
         extra: dict = {"CacheControl": "public, max-age=31536000, immutable"}
         if content_type:
             extra["ContentType"] = content_type
 
         last: Exception | None = None
-        for attempt in range(4):
+        tls_failed = False
+
+        for attempt in range(3):
             try:
                 self.client.put_object(Bucket=self.bucket, Key=key, Body=data, **extra)
                 return StoredObject(key=key, size=len(data), url=self.public_url(key))
             except Exception as exc:  # noqa: BLE001
                 last = exc
-                name = type(exc).__name__
-                # 认证/权限类错误重试无意义，直接抛
-                if "ClientError" in name and "403" in str(exc) or "AccessDenied" in str(exc):
+                if "SSL" in str(exc) or "handshake" in str(exc).lower():
+                    tls_failed = True
+                    break  # 重试无用，直接走备用通道
+                if "AccessDenied" in str(exc) or "InvalidAccessKeyId" in str(exc):
                     raise
-                wait = 2 * (attempt + 1)
-                log.warning("[r2] put %s 失败(%s)，%ds 后重试", key, exc, wait)
-                time.sleep(wait)
+                log.warning("[r2] put %s 失败(%s)，重试", key, exc)
+                time.sleep(2 * (attempt + 1))
+
+        # 降级：aws cli
+        if tls_failed:
+            import tempfile
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as f:
+                f.write(data)
+                tmp = f.name
+            try:
+                if _put_via_awscli(key, tmp, content_type):
+                    log.info("[r2] 经 aws cli 上传成功: %s", key)
+                    return StoredObject(key=key, size=len(data), url=self.public_url(key))
+            finally:
+                Path(tmp).unlink(missing_ok=True)
+
         raise RuntimeError(f"[r2] 上传 {key} 失败: {last}")
 
     def exists(self, key: str) -> bool:
