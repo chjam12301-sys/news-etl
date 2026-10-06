@@ -17,6 +17,10 @@ on:
         description: '强制重建（加中文译文或改 prompt 后用）'
         required: false
         default: 'true'
+      reset:
+        description: '清空数据库后重跑（RSS 去重导致抓不到新文章时用）'
+        required: false
+        default: 'false'
 
 # Free 计划同一时间只允许 1 个并发
 concurrency:
@@ -74,10 +78,12 @@ jobs:
           IN_TOPICS: ${{ inputs.topics }}
           IN_PER_TOPIC: ${{ inputs.per_topic }}
           IN_FORCE: ${{ inputs.force }}
+          IN_RESET: ${{ inputs.reset }}
         run: |
           ARGS="daily --per-topic ${IN_PER_TOPIC:-1}"
           if [ -n "${IN_TOPICS}" ]; then ARGS="$ARGS --topics ${IN_TOPICS}"; fi
           if [ "${IN_FORCE}" = "true" ]; then ARGS="$ARGS --force"; fi
+          if [ "${IN_RESET}" = "true" ]; then ARGS="$ARGS --reset"; fi
           echo "args=$ARGS" >> "$GITHUB_OUTPUT"
           echo "将要执行: python -m app.cli $ARGS"
 
