@@ -83,6 +83,24 @@ async def _process_article(
             db.delete(v)
         db.flush()
 
+    # 配图：Openverse CC0（方案 B）。失败不阻塞，落到占位块。
+    if force or article.image_url is None:
+        from .images import find_image, placeholder
+
+        try:
+            img = await find_image(article.topic, article.title_original)
+            if img:
+                article.image_url = img.url
+                article.image_credit = img.attribution
+                log.info("[img] article_id=%s → %s", article.id, img.url[:70])
+            else:
+                article.image_url = ""
+                article.image_credit = ""
+                log.info("[img] article_id=%s 未找到 CC0 图，用占位块", article.id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[img] 配图失败: %s", exc)
+        db.flush()
+
     llm = get_llm()
     log.info("[pipe] 改写中 article_id=%s topic=%s llm=%s",
              article.id, article.topic, llm.name if llm else "offline")

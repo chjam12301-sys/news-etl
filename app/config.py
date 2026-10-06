@@ -51,10 +51,15 @@ class Settings(BaseSettings):
     r2_endpoint: str = ""            # https://<accountid>.r2.cloudflarestorage.com
     r2_public_base: str = ""         # 自定义公开域名，留空则用签名 URL
 
-    # ---- 静态 JSON 输出（给 CDN / App 直读）----
+# ---- 静态 JSON 输出（给 CDN / App 直读）----
     # 开启后每次跑完流水线都会把当天内容导出成 JSON 写到存储里
     export_json: bool = True
     public_base_url: str = ""        # App 端访问 JSON 的基地址，如 https://cdn.example.com
+
+    # ---- 配图 ----
+    # 方案 B：统一走 Openverse（真 CC0 / Public Domain Mark），不用原图，授权最干净。
+    # 找不到时退回渐变占位块（见 images.placeholder）。
+    image_fetch_enabled: bool = True
 
     # ---- 抓取 ----------------------------------------------------------
     topics: str = "tech,business,science,health,sports,culture,world"

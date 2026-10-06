@@ -60,6 +60,7 @@ def init_db() -> None:
         "articles": {
             "summary_original": "TEXT",
             "image_url": "TEXT",
+            "image_credit": "TEXT",
             "rewrite_status": "VARCHAR(24)",
             "tts_status": "VARCHAR(24)",
             "error": "TEXT",
@@ -111,6 +112,8 @@ class Article(Base):
 
     # 主题相关元数据
     image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 配图署名（Openverse 的 creator + license）
+    image_credit: Mapped[str | None] = mapped_column(Text, nullable=True)
     published_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     fetched_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
     published_date: Mapped[dt.date] = mapped_column(Date, index=True, default=dt.date.today)

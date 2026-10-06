@@ -52,6 +52,20 @@ def _audio_meta(v: ArticleVersion, base: str) -> dict[str, Any] | None:
     }
 
 
+def _image_meta(a: Article) -> dict[str, Any]:
+    """配图信息。无图时给App 一个可渲染的渐变占位描述。"""
+    from .images import placeholder
+
+    if a.image_url:
+        return {
+            "type": "photo",
+            "url": a.image_url,
+            "credit": a.image_credit or "",
+        }
+    ph = placeholder(a.topic, a.title_original)
+    return {"type": "gradient", **ph}
+
+
 def _version_summary(v: ArticleVersion, a: Article, base: str) -> dict[str, Any]:
     return {
         "version_id": v.id,
@@ -64,7 +78,7 @@ def _version_summary(v: ArticleVersion, a: Article, base: str) -> dict[str, Any]
         "topic": a.topic,
         "source": a.source,
         "source_url": a.source_url,
-        "image_url": a.image_url,
+        "image": _image_meta(a),
         "published_date": a.published_date.isoformat(),
         "word_count": v.word_count,
         "reading_minutes": v.reading_minutes,
