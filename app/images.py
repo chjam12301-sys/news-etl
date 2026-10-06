@@ -114,7 +114,6 @@ async def search_openverse(
         "q": query,
         "license": "cc0,pdm",   # 只取 CC0 与 Public Domain Mark
         "page_size": page_size,
-        "extension": "jpg",
         "mature": "false",
     }
     headers = {"User-Agent": f"news-etl/{settings.app_name[:20]}"}
@@ -123,18 +122,25 @@ async def search_openverse(
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             r = await client.get(OPENVERSE_API, params=params, headers=headers)
             if r.status_code == 429:
-                log.info("[img] Openverse 限流，跳过")
+                log.warning("[img] Openverse 限流(429)，跳过：%s", query)
                 return None
             if r.status_code != 200:
-                log.info("[img] Openverse HTTP %s", r.status_code)
+                log.warning("[img] Openverse HTTP %s：%s", r.status_code, query)
                 return None
             data = r.json()
     except Exception as exc:  # noqa: BLE001
-        log.info("[img] Openverse 请求失败: %s", type(exc).__name__)
+        log.warning("[img] Openverse 请求失败 %s：%s", type(exc).__name__, query)
         return None
 
-    best = _pick_best(data.get("results") or [])
+    results = data.get("results") or []
+    log.info("[img] Openverse %r → %d 条（共%s）",
+             query, len(results), data.get("result_count"))
+    if not results:
+        return None
+
+    best = _pick_best(results)
     if not best or not best.get("url"):
+        log.warning("[img] %r 有 %d 条但无可用url", query, len(results))
         return None
 
     return ImageResult(

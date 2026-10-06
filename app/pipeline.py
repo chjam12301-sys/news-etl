@@ -78,10 +78,22 @@ async def _process_article(
     if existing and not force:
         log.info("[pipe] 已存在改写版本，跳过 article_id=%s", article.id)
         return stats
+
+    # force 时只重建「缺中文译文」的版本；已有完整译文的保留，
+    # 否则会白扔 DeepSeek 额度且让旧内容的中译消失。
     if existing and force:
-        for v in db.scalars(select(ArticleVersion).where(ArticleVersion.article_id == article.id)):
-            db.delete(v)
+        keep = []
+        for v in db.scalars(
+            select(ArticleVersion).where(ArticleVersion.article_id == article.id)
+        ):
+            if v.title_zh and v.paragraphs_zh:
+                keep.append(v.id)
+            else:
+                db.delete(v)
         db.flush()
+        if keep:
+            log.info("[pipe] article_id=%s 保留 %d 个已有完整译文的版本，只补其余",
+                     article.id, len(keep))
 
     # 配图：只用 Openverse CC0（方案 B）。
     # 不使用新闻原图 —— 非 CC0 有版权风险，且热链对方 CDN 易失效。
@@ -158,7 +170,8 @@ async def _process_article(
             .options(selectinload(ArticleVersion.audio))
             .where(ArticleVersion.article_id == article.id)
         ):
-            if version.audio is not None and not force:
+            # 保留的版本仍需补音频（它们可能只是译文完整但没配音）
+            if version.audio is not None:
                 continue
             try:
                 res = await synthesize(version.body, version.lang)
