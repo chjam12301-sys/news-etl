@@ -4,6 +4,67 @@
 
 ## 📌 更新记录 / 变更说明
 
+### v2.2 · 2026-10-07 —— 新增中文译文与 CC0 配图
+
+**新增字段**（向后兼容，旧代码不受影响）
+
+| 位置 | 字段 | 说明 |
+|---|---|---|
+| 列表项 | `title_zh` | 标题中文翻译 |
+| 列表项 | `lead_zh` | 导读中文翻译 |
+| 列表项 | `preview_zh` | 正文首段中文预览 |
+| 列表项 | `image` | **结构变了**，见下方 |
+| 详情 | `title_zh` / `lead_zh` | 同上 |
+| 详情 | `paragraphs_zh` | 与 `paragraphs` **一一对应**的中文翻译 |
+| 详情 | `body_zh` | 整篇中文（段落用 `\n\n` 分隔） |
+
+**`image` 字段两种形态**
+
+**`type: "photo"`** —— 真实 CC0 图片（Openverse，可商用）：
+
+```json
+{
+  "type": "photo",
+  "url": "https://live.staticflickr.com/3913/14334624106_a9bcc306a9_b.jpg",
+  "credit": "Bernard Spragg · cc0 1.0 · via flickr"
+}
+```
+
+**`type: "gradient"`** —— 没抓到 CC0 图时的渐变色块：
+
+```json
+{
+  "type": "gradient",
+  "from": "hsl(285, 42%, 62%)",
+  "to": "hsl(323, 46%, 48%)",
+  "label": "TECH",
+  "seed": "96a25f2962ae"
+}
+```
+
+> ⚠️ **`image.type` 必须分支处理**，两种都会出现。
+> 建议：`photo` 显示实图 + `credit` 放图片下方；`gradient` 用 `from/to` 画色块 + 叠 `label` 文字。
+
+**中文译文的约定**
+
+- `paragraphs_zh` 与 `paragraphs` **长度必须一致、顺序一一对应**
+- 若某篇没有中文译文（生成时降级），这些字段会是 `""` 或 `[]`，**App 需容错**
+- 译文要求自然口语化，非逐词硬译
+
+**关于 `version` 字段**
+
+`index.json` 顶层有 `version` 字段用于自证版本：
+
+```json
+{
+  "version": {
+    "published_at": "2026-10-06T17:09:45Z",
+    "content_hash": "f39f4df26d73",
+    "tip": "本文件即最新版；若 published_at 明显早于当前时间，说明命中了 CDN 旧缓存"
+  }
+}
+```
+
 ### v2.1 · 2026-10-07 —— 🔴 App 端必读
 
 **问题**：线上内容缺少逐词时间轴。
@@ -161,9 +222,14 @@ index.levels               // 等级字典，启动时缓存
 // ② 详情（点进某篇）
 const detail = await fetch(item.detail_url).then(r => r.json());
 detail.paragraphs          // 段落数组，分段渲染
-detail.vocab               // 词汇表，做练习题
-detail.text                // 🔴 逐词高亮用这个
+detail.paragraphs_zh       // 与 paragraphs 一一对应的中文翻译
+detail.text// 🔴 逐词高亮用这个
 detail.timeline            // 逐词时间轴
+detail.vocab               // 词汇表（已含中文释义）
+
+// 中文与配图（v2.2 新增，均可能为空，需容错）
+detail.title_zh|| item.title_zh      // 中文标题
+detail.image                        // { type: 'photo' | 'gradient', ... }
 
 // ③ 播放
 player.src = item.audio.url;
@@ -303,7 +369,62 @@ const item = day.versions.ja.ja_n3.find(x => x.article_id === currentId);
 
 ---
 
-## 五、版本详情 + 逐词时间轴
+## 五、配图渲染（v2.2 新增）
+
+`image.type` 有两种取值，**App 必须分支处理**：
+
+### `type: "photo"` —— 真实 CC0 图片
+
+```json
+{
+  "type": "photo",
+  "url": "https://live.staticflickr.com/3913/14334624106_a9bcc306a9_b.jpg",
+  "credit": "Bernard Spragg · cc0 1.0 · via flickr"
+}
+```
+
+- 图片均为 **CC0 / Public Domain**，可商用，无需授权
+- `credit` 建议显示在图片下方（小字）
+- 加载失败时建议降级到 `gradient` 表现
+
+### `type: "gradient"` —— 渐变色块
+
+```json
+{
+  "type": "gradient",
+  "from": "hsl(285, 42%, 62%)",
+  "to": "hsl(323, 46%, 48%)",
+  "label": "TECH",
+  "seed": "96a25f2962ae"
+}
+```
+
+配色由 `topic + title` 哈希生成，**同一篇永远同色**，视觉稳定。
+
+```jsx
+function Cover({ image }) {
+  if (image.type === 'photo') {
+    return (
+      <View>
+        <Image source={{ uri: image.url }} style={cover} />
+        <Text style={credit}>{image.credit}</Text>
+      </View>
+    );
+  }
+  // gradient：CSS 渐变或用 LinearGradient
+  return (
+    <View style={{ background: `linear-gradient(135deg, ${image.from}, ${image.to})` }}>
+      <Text style={label}>{image.label}</Text>
+    </View>
+  );
+}
+```
+
+> 原生端可用 `expo-linear-gradient` / iOS `CAGradientLayer` 实现同样的渐变。
+
+---
+
+## 六、版本详情 + 逐词时间轴
 
 ### `GET /data/versions/{version_id}.json`
 
@@ -356,7 +477,7 @@ const item = day.versions.ja.ja_n3.find(x => x.article_id === currentId);
 
 ---
 
-## 六、高亮实现
+## 七、高亮实现
 
 ```javascript
 function activeIndex(tl, t) {          // t = 当前播放毫秒
@@ -381,7 +502,7 @@ function render(detail, t) {
 
 ---
 
-## 七、等级体系
+## 八、等级体系
 
 | lang | level | code | label | 目标词数 |
 |---|---|---|---|---|
@@ -400,7 +521,7 @@ function render(detail, t) {
 
 ---
 
-## 八、音频
+## 九、音频
 
 | 项 | 值 |
 |---|---|
@@ -415,7 +536,7 @@ function render(detail, t) {
 
 ---
 
-## 九、完整流程
+## 十、完整流程
 
 > 📌 **v2.1 改动**：全部路径已同步为新Base URL。
 
@@ -437,7 +558,7 @@ App 启动
 
 ---
 
-## 十、内容更新
+## 十一、内容更新
 
 | 项 | 值 |
 |---|---|
@@ -450,7 +571,7 @@ App 启动
 
 ---
 
-## 十一、错误处理
+## 十二、错误处理
 
 | 情况 | 表现 | 处理 |
 |---|---|---|
@@ -461,83 +582,70 @@ App 启动
 
 ---
 
-## 十二、一份真实响应
+## 十三、一份真实响应
 
-`GET /index.json`（实际数据，无省略）：
+`GET /index.json` 里的一个列表项（实际数据）：
 
 ```json
 {
-  "service": "每日英语听力 · 内容后台",
-  "generated_at": "2026-10-06T15:16:47+00:00",
-  "dates": ["2026-10-06"],
-  "base_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@{sha}/content",
-  "index_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@{sha}/content/data/index.json",
-  "levels": [
-    { "code": "en_a1", "label": "A1 入门",   "lang": "en", "level": 1 },
-    { "code": "en_a2", "label": "A2 初级",   "lang": "en", "level": 2 },
-    { "code": "en_b1", "label": "B1 中级",   "lang": "en", "level": 3 },
-    { "code": "en_b2", "label": "B2 中高级", "lang": "en", "level": 4 },
-    { "code": "en_c1", "label": "C1 高级",   "lang": "en", "level": 5 },
-    { "code": "ja_n5", "label": "N5 初級",   "lang": "ja", "level": 1 },
-    { "code": "ja_n4", "label": "N4 初級",   "lang": "ja", "level": 2 },
-    { "code": "ja_n3", "label": "N3 中級",   "lang": "ja", "level": 3 },
-    { "code": "ja_n2", "label": "N2 中高級", "lang": "ja", "level": 4 },
-    { "code": "ja_n1", "label": "N1 上級",   "lang": "ja", "level": 5 }
-  ],
-  "latest": {
-    "date": "2026-10-06",
-    "versions": {
-      "en": [
-        {
-          "version_id": 1,
-          "article_id": 1,
-          "level_code": "en_a1",
-          "lang": "en",
-          "level": 1,
-          "level_label": "A1 入门",
-          "title": "OpenAI agents tried to hack Wikipedia tools",
-          "topic": "tech",
-          "source": "arstechnica",
-          "source_url": "https://arstechnica.com/security/2026/10/openai-agents-tried-to-hack-wikipedia-tools-and-flooded-it-with-requests/",
-          "image": {
-            "type": "photo",
-            "url": "https://cdn.arstechnica.net/wp-content/uploads/2026/10/ai-agentic-hacking.jpg",
-            "credit": ""
-          },
-          "published_date": "2026-10-06",
-          "word_count": 168,
-          "reading_minutes": 0.8,
-          "lead": "Wikipedia says OpenAI computer programs did bad things.",
-          "preview": "Wikipedia said this on Monday. OpenAI agents tried to hack a note-taking tool.",
-          "has_audio": true,
-          "audio": {
-            "id": 1,
-            "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@{sha}/content/audio/1/en_a1.mp3",
-            "duration": 73.587,
-            "size_bytes": 445248,
-            "engine": "edge-tts",
-            "voice": "en-US-AriaNeural",
-            "word_count": 189,
-            "has_timeline": true
-          },
-          "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@{sha}/content/data/versions/1.json"
-        }
-      ],
-      "ja": []
-    }
-  }
+  "version_id": 71,
+  "article_id": 8,
+  "level_code": "en_a1",
+  "lang": "en",
+  "level": 1,
+  "level_label": "A1 入门",
+  "title": "Oil Companies Ask Supreme Court to Stop Climate Lawsuits",
+  "title_zh": "石油公司求最高法院叫停气候诉讼",
+  "lead": "Oil companies want the US Supreme Court to stop many climate lawsuits. They say federal law blocks these cases. Cities and counties want money for climate damage.",
+  "lead_zh": "石油公司希望美国最高法院叫停许多气候诉讼。他们说联邦法律可以阻止这些案件。一些城市和县想要钱来应对气候损害。",
+  "topic": "tech",
+  "source": "arstechnica",
+  "source_url": "https://arstechnica.com/tech-policy/2026/10/big-oil-asks-supreme-court-to-kill-climate-lawsuits-before-trial/",
+  "image": {
+    "type": "photo",
+    "url": "https://live.staticflickr.com/3913/14334624106_a9bcc306a9_b.jpg",
+    "credit": "Bernard Spragg · cc0 1.0 · via flickr"
+  },
+  "published_date": "2026-10-06",
+  "word_count": 129,
+  "reading_minutes": 0.6,
+  "preview": "On Monday, the US Supreme Court heard a case about climate lawsuits. Oil companies ExxonMobil and Suncor are in the case. The city of Boulde",
+  "preview_zh": "周一，美国最高法院审理了一个关于气候诉讼的案件。石油公司埃克森美孚和森科能源是案件当事方。科罗拉多州博尔德市在2018年起诉了它们。博尔德说这些公司就气候变化对公众撒谎。博尔德想要钱来弥补极端天气造成的损失。",
+  "has_audio": true,
+  "audio": {
+    "id": 63,
+    "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@e302484/content/audio/8/en_a1.mp3",
+    "duration": 54.925,
+    "size_bytes": 333216,
+    "engine": "edge-tts",
+    "voice": "en-US-AriaNeural",
+    "word_count": 149,
+    "has_timeline": true
+  },
+  "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@e302484/content/data/versions/71.json"
 }
 ```
 
+`latest.versions.ja[2]` 的中日对照：
+
+| 字段 | 内容 |
+|---|---|
+| `title` | 石油大手、気候訴訟を止めたい——最高裁で弁論 |
+| `title_zh` | 石油巨头想让气候诉讼停下来，最高法院开庭辩论 |
+
+
+
 ---
 
-## 十三、接入自检清单
+## 十四、接入自检清单
 
 > 📌 **v2.1 新增**：第 1 条检查 Base URL 是否用了 SHA。
 
 - [ ] Base URL 的 SHA 来自 GitHub API（不是写死、也不是 `@main`）
 - [ ] `index.version.published_at` 是最新发布时间（不是几天前）
 - [ ] `index.latest.versions.en.length === 5`
+- [ ] `item.image.type` 有 `photo` / `gradient` **两个分支都能正常渲染**
+- [ ] `detail.paragraphs_zh.length === detail.paragraphs.length`（或中译为空时不崩溃）
 - [ ] `audio.url` 能播放，且 `duration` 与实际时长一致
 - [ ] `detail.timeline.length === item.audio.word_count`
 - [ ] `detail.text.slice(w.cs, w.ce) === w.w`（至少验 20 个词，全部相等）
