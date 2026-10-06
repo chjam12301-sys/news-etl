@@ -25,8 +25,12 @@ class Settings(BaseSettings):
     data_dir: str = str(DEFAULT_DATA_DIR)
 
     # ---- LLM -----------------------------------------------------------
-    # llm_provider: gemini | openrouter | offline
-    llm_provider: str = "gemini"
+    # llm_provider: deepseek | gemini | openrouter | offline
+    llm_provider: str = "deepseek"
+    # DeepSeek 官方（OpenAI 兼容）。deepseek-chat 即 Flash 档，性价比最高。
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com/v1"
+    deepseek_model: str = "deepseek-chat"
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash"
     openrouter_api_key: str = ""

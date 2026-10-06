@@ -168,14 +168,101 @@ class OpenRouterLLM(BaseLLM):
         raise RuntimeError("OpenRouter 重试耗尽")
 
 
+class OpenAICompatLLM(BaseLLM):
+    """任意 OpenAI 兼容端点（DeepSeek 官方、硅基流动、通义、Kimi 等）。
+
+    相比 OpenRouterLLM 的区别：base_url 与模型名均可配置，便于同一份代码
+    切换不同厂商。DeepSeek 官方为 https://api.deepseek.com/v1。
+    """
+
+    def __init__(self, name: str, base_url: str, api_key: str, model: str) -> None:
+        self.name = name
+        self.base_url = base_url.rstrip("/")
+        self.key = api_key
+        self.model = model
+
+    @property
+    def endpoint(self) -> str:
+        base = self.base_url
+        if not base.endswith("/chat/completions"):
+            base = f"{base}/chat/completions"
+        return base
+
+    async def complete(self, system: str, user: str, *, max_tokens: int = 2400) -> str:
+        headers = {"Authorization": f"Bearer {self.key}", "Content-Type": "application/json"}
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.7,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
+        }
+        last_err: str | None = None
+        async with httpx.AsyncClient(timeout=150) as client:
+            for attempt in range(4):
+                try:
+                    r = await client.post(self.endpoint, json=payload, headers=headers)
+                except Exception as exc:  # 网络类错误也重试
+                    last_err = f"{type(exc).__name__}: {exc}"
+                    await asyncio.sleep(3 * (attempt + 1))
+                    continue
+
+                if r.status_code == 429 or r.status_code >= 500:
+                    last_err = f"HTTP {r.status_code}: {r.text[:200]}"
+                    wait = 4 * (attempt + 1)
+                    log.warning("[llm] %s %s，%ds 后重试", self.name, r.status_code, wait)
+                    await asyncio.sleep(wait)
+                    continue
+
+                if r.status_code == 401:
+                    raise RuntimeError(f"[{self.name}] API Key 无效(401)，请检查 DEEPSEEK_API_KEY")
+
+                if r.status_code != 200:
+                    raise RuntimeError(f"[{self.name}] HTTP {r.status_code}: {r.text[:300]}")
+
+                data = r.json()
+                try:
+                    content = data["choices"][0]["message"]["content"]
+                except (KeyError, IndexError, TypeError) as exc:
+                    raise RuntimeError(f"[{self.name}] 响应结构异常: {str(data)[:300]}") from exc
+                if not content or not content.strip():
+                    raise RuntimeError(f"[{self.name}] 返回空内容")
+                return content
+
+        raise RuntimeError(f"[{self.name}] 重试耗尽: {last_err}")
+
+
+class DeepSeekLLM(OpenAICompatLLM):
+    """DeepSeek 专用。默认模型 deepseek-chat（Flash 档）。"""
+
+    name = "deepseek"
+
+    def __init__(self) -> None:
+        super().__init__(
+            name="deepseek",
+            base_url=settings.deepseek_base_url or "https://api.deepseek.com/v1",
+            api_key=settings.deepseek_api_key,
+            model=settings.deepseek_model or "deepseek-chat",
+        )
+
+
 def get_llm() -> BaseLLM | None:
     """按配置返回可用 provider；无 key 时返回 None 走离线降级。"""
     provider = (settings.llm_provider or "gemini").lower()
+
+    if provider == "deepseek" and settings.deepseek_api_key:
+        return DeepSeekLLM()
     if provider == "gemini" and settings.gemini_api_key:
         return GeminiLLM()
     if provider == "openrouter" and settings.openrouter_api_key:
         return OpenRouterLLM()
-    # 自动兜底：配置写错但另一个有 key 时也能工作
+
+    # 自动兜底：配置写错时按「有key 优先」选一个，保证不会静默降级
+    if settings.deepseek_api_key:
+        return DeepSeekLLM()
     if settings.gemini_api_key:
         return GeminiLLM()
     if settings.openrouter_api_key:
