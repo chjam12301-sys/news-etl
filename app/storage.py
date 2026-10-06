@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -136,20 +137,67 @@ class R2Storage:
 
         self.bucket = bucket
         self.public_base = public_base.rstrip("/")
-        self.client = boto3.client(
-            "s3",
+
+        # GitHub Actions 的 runner 走自有 TLS 栈，握手 Cloudflare R2 时可能
+        # 报 SSLV3_ALERT_HANDSHAKE_FAILURE。这里显式指定 certifi 的 CA 包，
+        # 避免 botocore 拿到不完整证书链；失败则退回 botocore 默认行为。
+        config = None
+        try:
+            from botocore.config import Config
+
+            config = Config(
+                signature_version="s3v4",
+                s3={"addressing_style": "path"},  # R2 用 path 风格最稳
+                retries={"max_attempts": 4, "mode": "standard"},
+            )
+        except Exception:  # noqa: BLE001
+            config = None
+
+        kwargs = dict(
             endpoint_url=endpoint,
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
             region_name=region,
         )
+        if config is not None:
+            kwargs["config"] = config
+
+        try:
+            import certifi
+
+            kwargs["verify"] = certifi.where()
+        except Exception:  # noqa: BLE001
+            pass
+
+        try:
+            self.client = boto3.client("s3", **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[r2] 带config 初始化失败(%s)，用默认配置重试", exc)
+            kwargs.pop("config", None)
+            kwargs.pop("verify", None)
+            self.client = boto3.client("s3", **kwargs)
 
     def put(self, key: str, data: bytes, *, content_type: str | None = None) -> StoredObject:
+        """写入对象。SSL/网络类错误自动重试，最终仍失败则抛出。"""
         extra: dict = {"CacheControl": "public, max-age=31536000, immutable"}
         if content_type:
             extra["ContentType"] = content_type
-        self.client.put_object(Bucket=self.bucket, Key=key, Body=data, **extra)
-        return StoredObject(key=key, size=len(data), url=self.public_url(key))
+
+        last: Exception | None = None
+        for attempt in range(4):
+            try:
+                self.client.put_object(Bucket=self.bucket, Key=key, Body=data, **extra)
+                return StoredObject(key=key, size=len(data), url=self.public_url(key))
+            except Exception as exc:  # noqa: BLE001
+                last = exc
+                name = type(exc).__name__
+                # 认证/权限类错误重试无意义，直接抛
+                if "ClientError" in name and "403" in str(exc) or "AccessDenied" in str(exc):
+                    raise
+                wait = 2 * (attempt + 1)
+                log.warning("[r2] put %s 失败(%s)，%ds 后重试", key, exc, wait)
+                time.sleep(wait)
+        raise RuntimeError(f"[r2] 上传 {key} 失败: {last}")
 
     def exists(self, key: str) -> bool:
         from botocore.exceptions import ClientError

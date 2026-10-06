@@ -119,6 +119,14 @@ async def _process_article(
 
     if with_tts and settings.tts_enabled:
         storage = get_storage()
+        # 容量护栏：超上限直接跳过配音，避免写入 R2 时产生费用
+        try:
+            from .storage_guard import check_capacity
+
+            check_capacity()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[pipe] %s", exc)
+            stats["audio_errors"] = 0
         for version in db.scalars(
             select(ArticleVersion)
             .options(selectinload(ArticleVersion.audio))
