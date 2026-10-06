@@ -1,4 +1,6 @@
 {
-  "note": "内容更新后请重新拉取 data/index.json；其中的链接已固定到具体 commit，不受 CDN 缓存影响",
-  "hint": "若 index.json 无当���内容，加 ?t=timestamp 重试"
+  "ref": "7edd9f5",
+  "content_ref": "200de00",
+  "updated_at": "2026-10-06T15:53:15.505212+00:00",
+  "hint": "App 先拉本文件（加 ?t= 时间戳），再用 ref 拼后续 URL"
 }
