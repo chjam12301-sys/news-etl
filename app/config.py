@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     # r2    : Cloudflare R2（S3 兼容）
     # b2    : Backblaze B2（S3 兼容，用 keyId:applicationKey 两段式认证）
     # local : 本地磁盘
-    # 注：部分网络环境到 Cloudflare S3 API 域名不可达，此时用 b2。
+    # 注：部分网络环境到 Cloudflare S3 API 域名不可达，故优先 supabase。
     storage_backend: str = ""
 
     # Backblaze B2（Cloudflare R2 走不通时的替代，10GB 免费）
@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     b2_secret_access_key: str = ""       # B2 叫 Application Key
     b2_endpoint: str = ""                # https://s3.us-west-004.backblazeb2.com
     b2_public_base: str = ""             # https://f000.backblazeb2.com/file/<bucket>
+
+    # ---- Supabase Storage（当前首选：Bearer 认证，与 Neon 同家）----
+    supabase_project_url: str = ""       # https://xxxx.supabase.co
+    supabase_service_key: str = ""       # service_role key（不是 anon key）
+    supabase_bucket: str = "news-audio"
 
     # 存储容量硬上限（GB）。免费额度留余量，超限拒绝写入。
     storage_limit_gb: float = 8.0

@@ -32,7 +32,11 @@ if _ENV.is_file():
         if not _line or _line.startswith("#") or "=" not in _line:
             continue
         _k, _v = _line.split("=", 1)
-        os.environ.setdefault(_k.strip(), _v.strip())
+        os.environ[_k.strip()] = _v.strip()
+    # pydantic-settings 在 import 时就读了配置，改完环境变量必须重建实例
+    _cfg = sys.modules.get("app.config")
+    if _cfg is not None and hasattr(_cfg, "get_settings"):
+        _cfg.get_settings.cache_clear()
 
 DEFAULTS = {
     "R2_BUCKET": "news-etl-audio",

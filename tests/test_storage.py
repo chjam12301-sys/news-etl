@@ -211,17 +211,18 @@ def test_r2_falls_back_to_presign(r2):
 # 工厂函数
 # --------------------------------------------------------------------------- #
 def test_get_storage_defaults_to_local(monkeypatch, tmp_path):
+    """所有云存储凭证都为空时，必须回退本地。"""
     from app import config as config_mod
 
     reset_storage()
     s = config_mod.get_settings()
-    monkeypatch.setattr(s, "r2_bucket", "", raising=False)
-    monkeypatch.setattr(s, "r2_access_key_id", "", raising=False)
-    monkeypatch.setattr(s, "r2_secret_access_key", "", raising=False)
-    monkeypatch.setattr(s, "r2_endpoint", "", raising=False)
+    for k in ("r2_bucket", "r2_access_key_id", "r2_secret_access_key", "r2_endpoint",
+              "b2_bucket", "b2_access_key_id", "b2_secret_access_key", "b2_endpoint",
+              "supabase_project_url", "supabase_service_key", "supabase_bucket"):
+        monkeypatch.setattr(s, k, "", raising=False)
 
     st = get_storage()
-    assert st.name in {"local", "r2"}
+    assert isinstance(st, LocalStorage), f"未配凭证时回退失败，得到 {type(st).__name__}"
     reset_storage()
 
 

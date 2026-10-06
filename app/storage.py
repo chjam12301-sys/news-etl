@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -185,6 +186,14 @@ class R2Storage:
         self.name = provider
         self.public_base = public_base.rstrip("/")
 
+        # Backblaze B2 的 S3 兼容认证特殊：access key = "keyId:applicationKey"
+        # 拼接而成，secret_access_key 任意非空字符串即可。
+        # 搞错会报 "Malformed Access Key Id"。
+        if provider == "b2":
+            ak, sk = f"{access_key}:{secret_key}", "b2-placeholder-secret"
+        else:
+            ak, sk = access_key, secret_key
+
         # R2 与 B2 都是 S3 兼容，差异主要在：
         # - region：R2 用 "auto"，B2 用 "us-west-004" 等
         # - 公开下载地址格式不同
@@ -202,8 +211,8 @@ class R2Storage:
 
         kwargs = dict(
             endpoint_url=endpoint,
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
+            aws_access_key_id=ak,
+            aws_secret_access_key=sk,
             region_name=region,
         )
         if config is not None:
@@ -346,12 +355,15 @@ def get_storage() -> Storage:
         endpoint = getattr(settings, "b2_endpoint", "")
         if not (bucket and key_id and secret and endpoint):
             return None
-        # B2 的 region 就写在 endpoint 域名里（s3.us-west-004.…）
+        # B2 的 region 就在 endpoint 域名里，可能是
+        #   s3.us-west-004.backblazeb2.com  → us-west-004
+        #   s3.ca-east-006.backblazeb2.com  → ca-east-006（带机房号）
+        # 用正则抓 s3. 与 backblazeb2.com 之间的整段。
         region = "us-west-004"
-        for part in endpoint.replace("https://", "").split("."):
-            if part.startswith("s3."):
-                region = part[3:]
-                break
+        host = endpoint.replace("https://", "").split("/")[0]
+        m = re.match(r"s3[.-]([a-z0-9-]+)\.backblazeb2\.com", host)
+        if m:
+            region = m.group(1)
         return R2Storage(
             bucket=bucket,
             access_key=key_id,
@@ -378,7 +390,22 @@ def get_storage() -> Storage:
             provider="r2",
         )
 
-    order = {"b2": [_try_b2, _try_r2], "r2": [_try_r2, _try_b2]}.get(backend, [_try_b2, _try_r2])
+    def _try_supabase() -> Storage | None:
+        url = getattr(settings, "supabase_project_url", "")
+        key = getattr(settings, "supabase_service_key", "")
+        bucket = getattr(settings, "supabase_bucket", "")
+        if not (url and key and bucket):
+            return None
+        from .storage_supabase import SupabaseStorage
+
+        return SupabaseStorage(bucket=bucket, project_url=url, service_key=key)
+
+    chain = {
+        "supabase": [_try_supabase, _try_b2, _try_r2],
+        "b2": [_try_b2, _try_supabase, _try_r2],
+        "r2": [_try_r2, _try_supabase, _try_b2],
+    }.get(backend, [_try_supabase, _try_b2, _try_r2])
+    order = chain
     for factory in order:
         try:
             st = factory()
