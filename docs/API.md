@@ -1,29 +1,84 @@
 # 每日英语听力 · 内容 API 文档
 
-> 🔴 **必须固定 commit，不要用 `@main`**
->
-> jsDelivr 对分支名（`@main`）缓存较久，会返回几小时前的旧数据，
-> 表现为「详情里没有timeline」。四个节点实测：`cdn` / `fastly` / `gcore` 都返回
-> 旧版（timeline=0），只有 `@<commit>` 返回正确数据。
->
-> **当前内容版本：`ae85d64`**
->
-> ```
-> https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@ae85d64/content/index.json
-> ```
->
-> 索引里的 `detail_url` / `audio.url` **都已固定到 commit**，
-> 直接用即可、可永久缓存。全部数据在 CDN 上，无需服务器、无需鉴权。
->
-> OpenAPI 规范见 `openapi-cdn.json`，可导入 Postman / Apifox 生成客户端。
->
-> **内容更新后 SHA 会变**，查当前版本：
-> ```
-> https://github.com/chjam12301-sys/news-etl/commits/main
-> ```
+---
+
+## 📌 更新记录 / 变更说明
+
+### v2.1 · 2026-10-07 —— 🔴 App 端必读
+
+**问题**：线上内容缺少逐词时间轴。
+
+**排查结论**：数据本身没问题（详情 JSON 里确有 189 词时间轴），根因是
+**jsDelivr 对分支名 `@main` 缓存很久**，客户端拿到的是几小时前的旧版数据。
+
+实测四个 CDN 节点：
+
+| 节点 | `@main` 返回 |
+|---|---|
+| `cdn.jsdelivr.net` | timeline = 0（旧） |
+| `fastly.jsdelivr.net` | timeline = 0（旧） |
+| `gcore.jsdelivr.net` | timeline = 0（旧） |
+| `@<commit>` | **timeline = 189（正确）** |
+
+**修复**：所有内容链接固定到 commit，不再用分支名。
+
+#### ✅ App 端只需改一行
+
+```javascript
+// ❌ 旧（命中过期缓存）
+const BASE = "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@main/content";
+
+// ✅ 新（固定到内容版本）
+const BASE = "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@ae85d64/content";
+```
+
+**其余代码逻辑完全不变。**
+
+#### ✅ 已实测通过
+
+```
+GET  {BASE}/index.json                        → 200, en 5 条 / ja 5 条
+GET  index.latest.versions.en[0].detail_url   → 200, timeline 189 词，对齐 0 错位
+HEAD index.latest.versions.en[0].audio.url    → 200, 434 KB
+```
+
+#### 本文档的改动位置
+
+| 位置 | 改动 | 重要度 |
+|---|---|---|
+| **本页顶部** | 新增本更新说明 | — |
+| 🔴 先看这两个坑 → 坑二 | 改写为「不要用 `@main`」 | 🔴 **必读** |
+| 一、三步接入 | Base URL 改为 `@ae85d64` | 🔴 **必改** |
+| 二、首页索引 | 路径 `/data/index.json` → `/index.json` | 🟡 注意 |
+| 九、完整流程 | 流程图同步为新路径 | 🟡 注意 |
+| 十三、自检清单 | 新增「Base URL 用 SHA」检查项 | 🟡 建议 |
+
+#### 以后怎么查版本号
+
+内容更新后 SHA 会变，二选一：
+
+```
+① https://github.com/chjam12301-sys/news-etl/commits/main     看最新 commit
+② GET {BASE}/data/latest.json    →  { ref, index_url }        推荐
+```
+
+方式②只需拉 276 字节的小文件，就知道该换哪个 SHA。
+
+---
+**当前内容版本：`ae85d64`** · 完整说明见本页顶部「更新记录」
+
+```
+https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@ae85d64/content/index.json
+```
+
+索引里的 `detail_url` / `audio.url` **都已固定到 commit**，直接用即可、可永久缓存。
+全部数据在 CDN 上，**无需服务器、无需鉴权**。
+OpenAPI 规范见 `openapi-cdn.json`，可导入 Postman / Apifox 生成客户端。
 ---
 
 ## 🔴 先看这两个坑
+
+>📌 **v2.1 更新**：坑二已改写，务必读完。
 
 ### 坑一：高亮必须用 `text`，不能用 `body`
 
@@ -38,6 +93,8 @@ detail.body.slice(w.cs, w.ce)            // ❌ 多段正文一定跳字
 ---
 
 ## 一、三步接入
+
+> 📌 **v2.1 改动**：Base URL 从 `@main` 改为 `@ae85d64`。
 
 ```javascript
 const BASE = "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@<commit>/content";  // ← commit 见文档开头
@@ -62,6 +119,8 @@ player.src = item.audio.url;
 ---
 
 ## 二、首页索引
+
+> 📌 **v2.1 改动**：入口路径改为 `/index.json`（短路径，少一层 `data/`）。
 
 ### `GET /index.json`（等价于 `/data/index.json`）
 
@@ -305,6 +364,8 @@ function render(detail, t) {
 
 ## 九、完整流程
 
+> 📌 **v2.1 改动**：全部路径已同步为新Base URL。
+
 ```
 App 启动
  ├─ GET /index.json             首页 + 等级字典（SHA 固定）
@@ -418,6 +479,8 @@ App 启动
 ---
 
 ## 十三、接入自检清单
+
+> 📌 **v2.1 新增**：第 1 条检查 Base URL 是否用了 SHA。
 
 - [ ] Base URL 用的是 commit SHA，**不是** `@main`
 - [ ] `index.latest.versions.en.length === 5`
