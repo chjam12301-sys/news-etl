@@ -1,0 +1,493 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "每日英语听力 · 内容 API",
+    "version": "2.0.0",
+    "description": "CDN 直读版内容接口。所有数据与音频都在 jsDelivr 上，无需服务器。\n\n⚠️ 高亮必须用 `text` 字段（段落换行已压成空格），不是 `body`。\n⚠️ `@main` 有 CDN 缓存，索引可能滞后 5-10 分钟；详情与音频内容不可变，可永久缓存。"
+  },
+  "servers": [
+    {
+      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@main/content",
+      "description": "jsDelivr CDN"
+    }
+  ],
+  "paths": {
+    "/data/index.json": {
+      "get": {
+        "summary": "首页索引",
+        "description": "返回最新一天的内容列表（en/ja 各 5 条）与等级字典。如遇缓存滞后，加 `?t={timestamp}` 重试。",
+        "tags": [
+          "首页索引"
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/data/{date}/index.json": {
+      "get": {
+        "summary": "按日索引",
+        "description": "某天的完整内容，按 language/level 分组。versions[lang][level_code] 可直接用于等级切换。",
+        "tags": [
+          "按日索引"
+        ],
+        "parameters": [
+          {
+            "name": "date",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            },
+            "description": "日期 YYYY-MM-DD"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功"
+          }
+        }
+      }
+    },
+    "/data/versions/{version_id}.json": {
+      "get": {
+        "summary": "版本详情（含逐词时间轴）",
+        "description": "单篇 + 单等级的完整内容：paragraphs / text / body / vocab / timeline。\n\n🔴 timeline[].cs/ce 是相对 `text` 字段的字符偏移，用 `body` 做 slice 会导致高亮跳字。\n\ntimeline[].sm/em 为毫秒时间戳，cs/ce 为字符区间，均严格单调递增。",
+        "tags": [
+          "版本详情"
+        ],
+        "parameters": [
+          {
+            "name": "version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "版本 id（列表项的 version_id）"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功"
+          }
+        }
+      }
+    },
+    "/audio/{article_id}/{level_code}.mp3": {
+      "get": {
+        "summary": "音频",
+        "description": "edge-tts 生成的 MP3（24kbps mono）。支持 Range 请求，可拖动进度条。内容不可变，建议永久缓存。",
+        "tags": [
+          "音频"
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "article_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "文章 id"
+          },
+          {
+            "name": "level_code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "en_a1",
+                "en_a2",
+                "en_b1",
+                "en_b2",
+                "en_c1",
+                "ja_n5",
+                "ja_n4",
+                "ja_n3",
+                "ja_n2",
+                "ja_n1"
+              ]
+            },
+            "description": "等级码"
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "WordTiming": {
+        "type": "object",
+        "required": [
+          "i",
+          "w",
+          "s",
+          "e",
+          "sm",
+          "em",
+          "cs",
+          "ce"
+        ],
+        "properties": {
+          "i": {
+            "type": "integer",
+            "description": "词序号"
+          },
+          "w": {
+            "type": "string",
+            "description": "词文本（含标点）"
+          },
+          "s": {
+            "type": "number",
+            "description": "起始秒"
+          },
+          "e": {
+            "type": "number",
+            "description": "结束秒"
+          },
+          "sm": {
+            "type": "integer",
+            "description": "起始毫秒"
+          },
+          "em": {
+            "type": "integer",
+            "description": "结束毫秒"
+          },
+          "cs": {
+            "type": "integer",
+            "description": "在 text 中的起始字符"
+          },
+          "ce": {
+            "type": "integer",
+            "description": "在 text 中的结束字符"
+          },
+          "si": {
+            "type": "integer",
+            "description": "句子序号"
+          }
+        }
+      },
+      "AudioMeta": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "可直接播放的完整 URL"
+          },
+          "duration": {
+            "type": "number",
+            "description": "秒"
+          },
+          "size_bytes": {
+            "type": "integer"
+          },
+          "engine": {
+            "type": "string",
+            "example": "edge-tts"
+          },
+          "voice": {
+            "type": "string",
+            "example": "en-US-AriaNeural"
+          },
+          "word_count": {
+            "type": "integer",
+            "description": "时间轴词数"
+          },
+          "has_timeline": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ImageMeta": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "photo",
+              "gradient"
+            ]
+          },
+          "url": {
+            "type": "string",
+            "description": "type=photo 时的图片地址"
+          },
+          "credit": {
+            "type": "string",
+            "description": "署名（CC0 授权）"
+          },
+          "from": {
+            "type": "string",
+            "description": "type=gradient 时起始色"
+          },
+          "to": {
+            "type": "string",
+            "description": "type=gradient 时结束色"
+          },
+          "label": {
+            "type": "string",
+            "description": "type=gradient 时的标签"
+          }
+        }
+      },
+      "ListItem": {
+        "type": "object",
+        "required": [
+          "version_id",
+          "article_id",
+          "level_code",
+          "lang",
+          "level",
+          "title"
+        ],
+        "properties": {
+          "version_id": {
+            "type": "integer"
+          },
+          "article_id": {
+            "type": "integer",
+            "description": "同一篇的 10 个等级共享"
+          },
+          "level_code": {
+            "type": "string",
+            "enum": [
+              "en_a1",
+              "en_a2",
+              "en_b1",
+              "en_b2",
+              "en_c1",
+              "ja_n5",
+              "ja_n4",
+              "ja_n3",
+              "ja_n2",
+              "ja_n1"
+            ]
+          },
+          "lang": {
+            "type": "string",
+            "enum": [
+              "en",
+              "ja"
+            ]
+          },
+          "level": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          },
+          "level_label": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "lead": {
+            "type": "string"
+          },
+          "preview": {
+            "type": "string"
+          },
+          "topic": {
+            "type": "string",
+            "enum": [
+              "tech",
+              "business",
+              "science",
+              "health",
+              "sports",
+              "culture",
+              "world"
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "source_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "image": {
+            "$ref": "#/components/schemas/ImageMeta"
+          },
+          "published_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "word_count": {
+            "type": "integer"
+          },
+          "reading_minutes": {
+            "type": "number"
+          },
+          "has_audio": {
+            "type": "boolean"
+          },
+          "audio": {
+            "$ref": "#/components/schemas/AudioMeta"
+          },
+          "detail_url": {
+            "type": "string",
+            "format": "uri"
+          }
+        }
+      },
+      "VersionDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ListItem"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "paragraphs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "段落数组，推荐用于分段渲染"
+              },
+              "body": {
+                "type": "string",
+                "description": "保留 \\n\\n 的正文，仅用于展示"
+              },
+              "text": {
+                "type": "string",
+                "description": "🔴 逐词高亮必须用这个字段（单行）"
+              },
+              "timeline": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/WordTiming"
+                }
+              },
+              "vocab": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "word": {
+                      "type": "string"
+                    },
+                    "pos": {
+                      "type": "string"
+                    },
+                    "zh": {
+                      "type": "string",
+                      "description": "中文释义"
+                    },
+                    "note": {
+                      "type": "string",
+                      "description": "用法说明"
+                    }
+                  }
+                }
+              },
+              "title_original": {
+                "type": "string"
+              },
+              "body_original": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
+      "Index": {
+        "type": "object",
+        "properties": {
+          "service": {
+            "type": "string"
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "dates": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "levels": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "lang": {
+                  "type": "string"
+                },
+                "level": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "latest": {
+            "type": "object",
+            "properties": {
+              "date": {
+                "type": "string",
+                "format": "date"
+              },
+              "versions": {
+                "type": "object",
+                "properties": {
+                  "en": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/ListItem"
+                    }
+                  },
+                  "ja": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/ListItem"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
