@@ -77,9 +77,9 @@ app/
   schemas.py     出参模型
   db.py          SQLAlchemy 模型 + 建表/迁移
 docs/
-  注册指南.md按步骤注册 3 个账号
-  API.md接口文档（REST + CDN 两种接入）
-  DEPLOY.md      架构说明与配额核算
+  API.md             接口文档（给 App 端）
+  DEPLOY.md          部署运维（架构 / 配额 / 排查）
+  防扣费清单.md两道护栏
 tests/           34 个回归测试
 ```
 
@@ -116,6 +116,18 @@ tests/           34 个回归测试
 覆盖：等级体系、时间轴对齐（单调/缺口/标点/坐标系契约）、LLM JSON 解析、离线降级、
 TTS 端到端、存储层（本地 + R2，含路径穿越防护）。
 
+
+---
+
+## 文档
+
+| 文档 | 用途 |
+|---|---|
+| **[API.md](docs/API.md)** | **接口文档** —— 给 App 端对接用 |
+| [DEPLOY.md](docs/DEPLOY.md) | 部署运维 —— 架构、配额、故障排查 |
+| [防扣费清单.md](docs/防扣费清单.md) | 两道护栏，防止意外产生费用 |
+
+
 ---
 
 ## 常用命令
@@ -144,4 +156,4 @@ GET  /api/v1/audio/{audio_id}.mp3                  # 音频（支持 Range）
 POST /api/v1/jobs/daily                            # 手动触发流水线
 ```
 
-完整说明见 [`docs/API.md`](docs/API.md)，注册上线见 [`docs/注册指南.md`](docs/注册指南.md)。
+完整说明见 [`docs/API.md`](docs/API.md)，部署与运维见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。

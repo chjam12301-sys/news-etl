@@ -1,5 +1,7 @@
 # 每日英语听力 · 内容 API 文档
 
+📄 **在线查看**：[github.com/chjam12301-sys/news-etl/blob/main/docs/API.md](https://github.com/chjam12301-sys/news-etl/blob/main/docs/API.md)
+
 ---
 
 ## 📌 更新记录 / 变更说明
