@@ -20,7 +20,9 @@ App 用法::
     正文      body / paragraphs / title / lead
     中文译文   title_zh / lead_zh / paragraphs_zh
     词汇表     vocab
-    音频       时长、词数、时间轴指纹
+    音频       时长、体积、音色、时间轴**完整字段**
+              （w / sm / em / cs / ce / si 全部纳入 —— App 用 cs/ce 做
+                高亮区间、si 做句循环，缺一不可）
 
 不参与计算
 ----------
@@ -47,13 +49,30 @@ def _digest(payload: Any) -> str:
 
 
 def timeline_fingerprint(timeline: list[dict[str, Any]] | None) -> str:
-    """时间轴指纹：只看「词 + 时间戳」，忽略字符偏移。
+    """时间轴指纹：纳入 App 做高亮与句循环所需的全部字段。
 
-    字符偏移对 App 的跟读高亮无影响，纳入会让无关改动触发重下。
+    字段与用途的对应关系（App 侧）：
+        w   词文本—— 高亮显示
+        sm  起始毫秒 —— 播放定位
+        em  结束毫秒 —— 播放定位
+        cs  起始字符 —— **高亮区间**（在 text 上 setStart）
+        ce  结束字符 —— **高亮区间**（在 text 上 setEnd）
+        si  句子编号 —— **句循环 / 分句播放**
+
+    曾一度只取 [w, sm, em] 而忽略 cs/ce/si，理由是「字符偏移不影响跟读」。
+    这是错的 —— cs/ce 决定高亮落到哪一段字符、si 决定句循环的分组，
+    二者变化都会让 App 界面表现不同，必须参与指纹，否则 App 会误判
+    「内容没更新」而沿用旧数据，导致高亮错位。
     """
     if not timeline:
         return ""
-    return _digest([[w.get("w"), w.get("sm"), w.get("em")] for w in timeline])
+    return _digest(
+        [
+            [w.get("w"), w.get("sm"), w.get("em"),
+             w.get("cs"), w.get("ce"), w.get("si")]
+            for w in timeline
+        ]
+    )
 
 
 def audio_fingerprint(

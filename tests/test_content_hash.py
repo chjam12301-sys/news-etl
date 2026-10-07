@@ -21,7 +21,7 @@ BASE = dict(
     vocab=[{"word": "oil", "zh": "石油"}],
     audio={
         "duration_ms": 54925, "size_bytes": 445248,
-        "timeline": [{"w": "Oil", "sm": 100, "em": 300, "cs": 0, "ce": 3}],
+        "timeline": [{"w": "Oil", "sm": 100, "em": 300, "cs": 0, "ce": 3, "si": 0}],
         "voice": "en-US-AriaNeural", "engine": "edge-tts",
     },
 )
@@ -76,6 +76,25 @@ class TestWhatChangesHash:
         tl = [{"w": "Oil", "sm": 101, "em": 300, "cs": 0, "ce": 3}]
         assert h(audio={**BASE["audio"], "timeline": tl}) != h()
 
+    def test_char_offset_change(self):
+        """cs/ce 变化 → 高亮区间变化 → 必须重下。
+
+        App 用 text.slice(cs, ce) 标range，改了偏移而沿用旧数据会高亮错位。
+        （曾经误判为「不影响跟读」而排除，App 侧指出后修正。）
+        """
+        tl = [{"w": "Oil", "sm": 100, "em": 300, "cs": 0, "ce": 9}]
+        assert h(audio={**BASE["audio"], "timeline": tl}) != h()
+
+    def test_start_offset_change(self):
+        """cs 单独变化也要触发。"""
+        tl = [{"w": "Oil", "sm": 100, "em": 300, "cs": 5, "ce": 3}]
+        assert h(audio={**BASE["audio"], "timeline": tl}) != h()
+
+    def test_sentence_index_change(self):
+        """si 变化 → 句循环分组变化 → 必须重下。"""
+        tl = [{"w": "Oil", "sm": 100, "em": 300, "cs": 0, "ce": 3, "si": 7}]
+        assert h(audio={**BASE["audio"], "timeline": tl}) != h()
+
     def test_audio_removed(self):
         """音频从有到无 → App 需知道该重新拉详情。"""
         assert h(audio=None) != h()
@@ -87,11 +106,6 @@ class TestWhatDoesNotChangeHash:
     def test_duplicate_content_across_ids(self):
         """正文完全相同但等级不同 → 仍应视为不同内容。"""
         assert h(level=3) != h(level=4)
-
-    def test_char_offset_only_change(self):
-        """时间轴的字符偏移（cs/ce）变化不影响跟读，不该重下。"""
-        tl = [{"w": "Oil", "sm": 100, "em": 300, "cs": 0, "ce": 9}]
-        assert h(audio={**BASE["audio"], "timeline": tl}) == h()
 
     def test_empty_vs_none(self):
         """空字符串与None 等价，避免生成器差异造成假变化。"""
@@ -147,3 +161,40 @@ class TestFromVersion:
             voice="en-US-AriaNeural", engine="edge-tts",
         )
         assert from_version(v, audio) != from_version(v, None)
+
+
+class TestHighlightFieldsAreCovered:
+    """回归：App 反馈过「上游哈希漏了高亮所需字段」。
+
+    App 用 cs/ce 在 text 上标range 做高亮、用 si 做句循环，
+    这三个字段变化必须被指纹覆盖，否则 App 会沿用旧数据导致高亮错位。
+    """
+
+    def _tl(self, **over):
+        base = {"w": "Oil", "sm": 100, "em": 300, "cs": 0, "ce": 3, "si": 0}
+        base.update(over)
+        return [base]          # timeline 是 list[dict]，不是 list[list]
+
+    def test_cs_ce_si_all_covered(self):
+        for label, over in [
+            ("cs", {"cs": 7}),
+            ("ce", {"ce": 7}),
+            ("si", {"si": 3}),
+        ]:
+            assert h(audio={**BASE["audio"], "timeline": self._tl(**over)}) != h(), \
+                f"timeline.{label} 变化必须改变 hash"
+
+    def test_all_highlight_fields_present_in_fingerprint(self):
+        """指纹必须对全部六个字段敏感，少一个都不行。"""
+        fields = ["w", "sm", "em", "cs", "ce", "si"]
+        for f in fields:
+            new = self._tl(**{f: 999})
+            assert timeline_fingerprint(new) != timeline_fingerprint(self._tl()), \
+                f"timeline_fingerprint 未覆盖字段 {f}"
+
+    def test_word_order_matters(self):
+        """词序变化 → 高亮顺序变化 → 必须重下。"""
+        a = [{"w": "A", "sm": 0, "em": 1, "cs": 0, "ce": 1, "si": 0},
+             {"w": "B", "sm": 1, "em": 2, "cs": 2, "ce": 3, "si": 0}]
+        b = list(reversed(a))
+        assert timeline_fingerprint(a) != timeline_fingerprint(b)
