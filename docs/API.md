@@ -4,25 +4,34 @@
 
 ---
 
-## 📌 更新记录 / 变更说明
+## 📌 修订日志
 
-### v2.2 · 2026-10-07 —— 新增中文译文与 CC0 配图
+| 版本 | 日期 | 状态 | 摘要 |
+|---|---|---|---|
+| **v2.2** | 2026-10-07 | ✅ 可用 | 新增中文译文字段；`image` 改为结构化对象（photo / gradient） |
+| **v2.1** | 2026-10-07 | ✅ 可用 | CDN 链接从写死 SHA 改为运行时查询（修「详情无时间轴」） |
 
-**新增字段**（向后兼容，旧代码不受影响）
+> 字段只增不改，**v2.0 的客户端代码无需修改即可跑在 v2.2 上**。
+
+---
+
+## 📌 v2.2 · 中文译文与 CC0 配图
+
+**新增字段**（向后兼容）
 
 | 位置 | 字段 | 说明 |
 |---|---|---|
 | 列表项 | `title_zh` | 标题中文翻译 |
 | 列表项 | `lead_zh` | 导读中文翻译 |
-| 列表项 | `preview_zh` | 正文首段中文预览 |
-| 列表项 | `image` | **结构变了**，见下方 |
+| 列表项 | `preview_zh` | 正文首段中文预览，可直接作列表摘要 |
 | 详情 | `title_zh` / `lead_zh` | 同上 |
 | 详情 | `paragraphs_zh` | 与 `paragraphs` **一一对应**的中文翻译 |
-| 详情 | `body_zh` | 整篇中文（段落用 `\n\n` 分隔） |
+| 详情 | `body_zh` | 整篇中文（段落以 `\n\n` 分隔） |
+| 列表 + 详情 | `image` | ⚠️ **结构变了**，见下 |
 
-**`image` 字段两种形态**
+**⚠️ `image` 两种形态，App 必须分支处理**
 
-**`type: "photo"`** —— 真实 CC0 图片（Openverse，可商用）：
+`type: "photo"` —— 真实 CC0 图片（Openverse，可商用）：
 
 ```json
 {
@@ -32,7 +41,7 @@
 }
 ```
 
-**`type: "gradient"`** —— 没抓到 CC0 图时的渐变色块：
+`type: "gradient"` —— 没抓到 CC0 图时的渐变色块：
 
 ```json
 {
@@ -44,37 +53,43 @@
 }
 ```
 
-> ⚠️ **`image.type` 必须分支处理**，两种都会出现。
-> 建议：`photo` 显示实图 + `credit` 放图片下方；`gradient` 用 `from/to` 画色块 + 叠 `label` 文字。
+渲染要点：`photo` 显示实图 + `credit` 小字，加载失败建议降级到 `gradient`；
+`gradient` 用 `from/to` 画渐变 + 叠 `label`。配色由标题哈希生成，同一篇永远同色。
 
 **中文译文的约定**
 
 - `paragraphs_zh` 与 `paragraphs` **长度必须一致、顺序一一对应**
-- 若某篇没有中文译文（生成时降级），这些字段会是 `""` 或 `[]`，**App 需容错**
-- 译文要求自然口语化，非逐词硬译
+- 生成时若降级（无 LLM），这些字段会是 `""` 或 `[]` —— **App 必须容错**
 
-**关于 `version` 字段**
+**新增的版本自证字段**
 
-`index.json` 顶层有 `version` 字段用于自证版本：
+`index.json` 顶层多了 `version`，用于判断是否命中 CDN 旧缓存：
 
 ```json
 {
   "version": {
     "published_at": "2026-10-06T17:09:45Z",
-    "content_hash": "f39f4df26d73",
-    "tip": "本文件即最新版；若 published_at 明显早于当前时间，说明命中了 CDN 旧缓存"
+    "content_hash": "f39f4df26d73"
   }
 }
 ```
 
-### v2.1 · 2026-10-07 —— 🔴 App 端必读
+若 `published_at` 明显早于当前时间 → 拿到的是旧缓存。
 
-**问题**：线上内容缺少逐词时间轴。
+**中日对照实例**
 
-**排查结论**：数据本身没问题（详情 JSON 里确有 189 词时间轴），根因是
-**jsDelivr 对分支名 `@main` 缓存很久**，客户端拿到的是几小时前的旧版数据。
+| 字段 | 内容 |
+|---|---|
+| `title` | 石油大手、気候訴訟を止めたい——最高裁で弁論 |
+| `title_zh` | 石油巨头想让气候诉讼停下来，最高法院开庭辩论 |
 
-实测四个 CDN 节点：
+---
+
+## 📌 v2.1 · CDN 链接改为运行时查询
+
+**问题现象**：客户端反馈「线上数据缺少时间轴」。
+
+**根因**：jsDelivr 对**分支名** `@main` 缓存很久，返回几小时前的旧数据。实测四个 CDN 节点有三个返回旧版：
 
 | 节点 | `@main` 返回 |
 |---|---|
@@ -83,113 +98,42 @@
 | `gcore.jsdelivr.net` | timeline = 0（旧） |
 | `@<commit>` | **timeline = 189（正确）** |
 
-**修复**：所有内容链接固定到 commit，不再用分支名。
-
-#### ✅ App 端改法：运行时查版本，不要写死
+**修复**：Base URL 不再写死，改为运行时查 commit SHA。
 
 ```javascript
-// 🔴 运行时取最新 SHA（两种方式，任选其一，都无缓存问题）
-
-// 方式 A：GitHub API（最简单，注意有 60 次/小时 限流，勿高频轮询）
+// 🔴 运行时取最新 SHA，不要写死、也不要用 @main
 const REPO = "chjam12301-sys/news-etl";
 const { sha } = await fetch(`https://api.github.com/repos/${REPO}/commits/main`)
   .then(r => r.json());
-
-// 方式 B：raw.githubusercontent（无限流，推荐 App 用这个）
-// 它的 ETag 就是 commit SHA
-const shaB = (await fetch(`https://raw.githubusercontent.com/${REPO}/main/content/data/latest.json`,
-  { method: 'HEAD' })).headers.get('etag').replaceAll('"', '').slice(0, 7);
-
-// 第 2 步：用 SHA 拼 CDN 地址 —— 所有内容固定到这个 commit，永不命中过期缓存
 const BASE = `https://cdn.jsdelivr.net/gh/${REPO}@${sha}/content`;
 
-// 第 3 步：正常拉取
+// 之后正常拉取
 const index = await fetch(`${BASE}/index.json`).then(r => r.json());
 const detail = await fetch(index.latest.versions.en[0].detail_url).then(r => r.json());
-// detail.timeline 有完整逐词时间轴
 ```
 
-> ⚠️ **不要用 `ETag` 直接当 URL**：raw 的 ETag 是 **blob SHA**（文件级），
-> jsDelivr 认commit SHA，用 blob SHA 会全部 404。必须取短 SHA（`.slice(0, 7)`）
-> 或用 `git ls-remote` / GitHub API 拿完整 commit SHA。
+索引里的 `detail_url` / `audio.url` **本身就带 SHA**，拿到后直接用、可永久缓存。
 
-**方式 B 的实测值**（供你核对格式）：
+> ⚠️ **不要用 `raw.githubusercontent.com` 的 `ETag` 当 SHA** —— 那是 blob SHA（文件级），
+> jsDelivr 认commit SHA，用 blob SHA 会全部 404。
 
-```
-ETag: "5b6bd6d4248fc8638873244b012663e083fe0ffa5dab211dc3d44efd05799c1a"
-→取前 7 位 = 5b6bd6d   ⚠️ 这是 blob SHA，拼 CDN 会 404，需换方式取 commit SHA
-```
+**本文档相应改动**
 
-**为什么这样最好**：
-
-| | 写死 SHA | 运行时查（本方案） |
+| 位置 | 改动 | 重要度 |
 |---|---|---|
-| 内容更新后 | ❌ 要改代码再发版 | ✅ **无需任何改动** |
-| 拿到旧缓存 | 静默出错 | `index.version.published_at` 一眼看出 |
-| 文档是否会过期 | 文档里的 SHA 会变、旧文档反而误导 | **文档里没有 SHA，永不过期** |
+| 一、三步接入 | Base URL 新增取 SHA 的两步 | 🔴 **必改** |
+| 二、首页索引 | 路径 `/data/index.json` → `/index.json` | 🟡 注意 |
+| 十、完整流程 | 流程图路径同步 | 🟡 注意 |
+| 十四、自检清单 | 新增「Base URL 用运行时 SHA」 | 🟡 建议 |
 
-#### ✅ 自检：怎么确认拿到的是新版
-
-`index.json` 带 `version` 字段，**数据自己会告诉你版本**：
-
-```json
-{
-  "version": {
-    "published_at": "2026-10-06T16:11:37Z",
-    "content_hash": "f39f4df26d73",
-    "ref": "db6bbe0"
-  }
-}
-```
-
-- `published_at` 明显早于当前时间 → 命中了 CDN 旧缓存
-- `content_hash` 每次内容更新都会变
-
-#### ✅ 已实测通过
+**实测结果**
 
 ```
-git ls-remote origin refs/heads/main          → sha        （无限流）
 GET  {BASE}/index.json                        → 200, en 5 条 / ja 5 条
 GET  index.latest.versions.en[0].detail_url   → 200, timeline 189 词，对齐 0 错位
 HEAD index.latest.versions.en[0].audio.url    → 200, 434 KB
 ```
 
-#### 本文档的改动位置
-
-| 位置 | 改动 | 重要度 |
-|---|---|---|
-| **本页顶部** | 新增本更新说明 | — |
-| 🔴 先看这两个坑 → 坑二 | 改写为「不要用 `@main`」 | 🔴 **必读** |
-| 一、三步接入 | Base URL 改为**运行时取 SHA** | 🔴 **必改** |
-| 二、首页索引 | 路径 `/data/index.json` → `/index.json` | 🟡 注意 |
-| 九、完整流程 | 流程图同步为新路径 | 🟡 注意 |
-| 十三、自检清单 | 新增「Base URL 用 SHA」检查项 | 🟡 建议 |
-
-#### 以后怎么查版本号
-
-内容更新后 SHA 会变，二选一：
-
-```
-① https://github.com/chjam12301-sys/news-etl/commits/main     看最新 commit
-② GET {BASE}/data/latest.json    →  { ref, index_url }        推荐
-```
-
-方式②只需拉 276 字节的小文件，就知道该换哪个 SHA。
-
----
-**Base URL 里不要写死 SHA**，用下面两步动态获取（否则本文档一更新就过期）：
-
-```
-① 拿 commit sha（任选）
-   git ls-remote origin refs/heads/main
-   或 GET api.github.com/repos/chjam12301-sys/news-etl/commits/main
-② https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@{sha}/content/index.json
-```
-
-索引里的 `detail_url` / `audio.url` **都已固定到 commit**，直接用即可、可永久缓存。
-`index.json` 的 `version.published_at` 可用于判断是否命中旧缓存。
-全部数据在 CDN 上，**无需服务器、无需鉴权**。
-OpenAPI 规范见 `openapi-cdn.json`，可导入 Postman / Apifox 生成客户端。
 ---
 
 ## 🔴 先看这两个坑
@@ -210,7 +154,7 @@ detail.body.slice(w.cs, w.ce)            // ❌ 多段正文一定跳字
 
 ## 一、三步接入
 
-> 📌 **v2.1 改动**：Base URL 从写死 `@main` 改为**运行时从 GitHub API 取 SHA**。
+> 📌 **v2.1 改动**：Base URL 不再写死，改为**运行时从 GitHub API 取 SHA**。
 
 ```javascript
 const BASE = "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@<commit>/content";  // ← commit 见文档开头
@@ -241,7 +185,7 @@ player.src = item.audio.url;
 
 ## 二、首页索引
 
-> 📌 **v2.1 改动**：入口路径改为 `/index.json`（短路径，少一层 `data/`）。
+> 📌 **v2.1 改动**：入口路径改为 `/index.json`（短路径，少一层 `data/`）
 
 ### `GET /index.json`（等价于 `/data/index.json`）
 
@@ -371,7 +315,9 @@ const item = day.versions.ja.ja_n3.find(x => x.article_id === currentId);
 
 ---
 
-## 五、配图渲染（v2.2 新增）
+## 五、配图渲染
+
+> 📌 **v2.2 新增**：本节整体新增，`image` 字段结构在 v2.1 时是裸字符串。
 
 `image.type` 有两种取值，**App 必须分支处理**：
 
@@ -540,7 +486,7 @@ function render(detail, t) {
 
 ## 十、完整流程
 
-> 📌 **v2.1 改动**：全部路径已同步为新Base URL。
+> 📌 **v2.1 改动**：全部路径已同步为新 Base URL
 
 ```
 App 启动
@@ -641,7 +587,7 @@ App 启动
 
 ## 十四、接入自检清单
 
-> 📌 **v2.1 新增**：第 1 条检查 Base URL 是否用了 SHA。
+> 📌 **v2.1 新增**：首条检查项 —— Base URL 的 SHA 须运行时获取
 
 - [ ] Base URL 的 SHA 来自 GitHub API（不是写死、也不是 `@main`）
 - [ ] `index.version.published_at` 是最新发布时间（不是几天前）
