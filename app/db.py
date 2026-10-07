@@ -69,6 +69,7 @@ def init_db() -> None:
         "article_versions": {
             "reading_minutes": "FLOAT",
             "lead": "TEXT",
+            "content_hash": "VARCHAR(32)",
             "title_zh": "VARCHAR(512)",
             "lead_zh": "TEXT",
             "paragraphs_zh": "JSON",
@@ -163,6 +164,11 @@ class ArticleVersion(Base):
     vocab: Mapped[list[Any]] = mapped_column(JSON, default=list)
     # 1-3 句导读
     lead: Mapped[str] = mapped_column(Text, default="")
+
+    # ---- 内容指纹（App 用它判断是否需要重新下载）----
+    # 范围：正文 + 中文译文 + 词汇表 + 音频；不含配图与派生值。
+    # 全局 commit SHA 变化不代表本篇变化，这个才是单篇粒度的判断依据。
+    content_hash: Mapped[str | None] = mapped_column(String(32), index=True, nullable=True)
 
     # ---- 中文翻译（App 端展示用）----
     title_zh: Mapped[str | None] = mapped_column(String(512), nullable=True)

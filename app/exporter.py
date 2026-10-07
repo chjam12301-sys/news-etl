@@ -94,7 +94,11 @@ def _is_cc0_safe(url: str) -> bool:
 
 
 def _version_summary(v: ArticleVersion, a: Article, base: str, rev: str = "") -> dict[str, Any]:
+    from .content_hash import from_version
+
     return {
+        # App 用它判断是否需要重新下载：相同 → 读本地；不同 → 下载
+        "content_hash": v.content_hash or from_version(v, v.audio),
         "version_id": v.id,
         "article_id": v.article_id,
         "level_code": v.level_code,

@@ -211,6 +211,23 @@ async def _process_article(
     else:
         article.tts_status = "skipped"
 
+    # 内容指纹：必须等音频生成完再算，否则 hash 会与实际音频不符
+    try:
+        from .content_hash import from_version
+
+        for version in db.scalars(
+            select(ArticleVersion)
+            .options(selectinload(ArticleVersion.audio))
+            .where(ArticleVersion.article_id == article.id)
+        ):
+            old_hash = version.content_hash
+            version.content_hash = from_version(version, version.audio)
+            if version.content_hash != old_hash:
+                log.debug("[hash] article_id=%s %s → %s",
+                          article.id, version.level_code, version.content_hash)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[pipe] 计算 content_hash 失败: %s", exc)
+
     db.flush()
     return stats
 
