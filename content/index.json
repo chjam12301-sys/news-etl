@@ -1,12 +1,12 @@
 {
  "service": "每日英语听力 · 内容后台",
- "generated_at": "2026-10-07T00:28:34.079673+00:00",
+ "generated_at": "2026-10-07T00:41:23.179074+00:00",
  "latest": {
   "date": "2026-10-06",
   "versions": {
    "en": [
     {
-     "content_hash": "7868c5da452954ee",
+     "content_hash": "cea9556fafab1bdd",
      "version_id": 91,
      "article_id": 10,
      "level_code": "en_a1",
@@ -33,7 +33,7 @@
      "has_audio": true,
      "audio": {
       "id": 81,
-      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/audio/10/en_a1.mp3",
+      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/audio/10/en_a1.mp3",
       "duration": 67.2,
       "size_bytes": 406944,
       "engine": "edge-tts",
@@ -41,10 +41,10 @@
       "word_count": 174,
       "has_timeline": true
      },
-     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/data/versions/91.json"
+     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/data/versions/91.json"
     },
     {
-     "content_hash": "df8efb4ebb4d0641",
+     "content_hash": "c28926efdd1c60cd",
      "version_id": 92,
      "article_id": 10,
      "level_code": "en_a2",
@@ -71,7 +71,7 @@
      "has_audio": true,
      "audio": {
       "id": 82,
-      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/audio/10/en_a2.mp3",
+      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/audio/10/en_a2.mp3",
       "duration": 67.263,
       "size_bytes": 407376,
       "engine": "edge-tts",
@@ -79,10 +79,10 @@
       "word_count": 175,
       "has_timeline": true
      },
-     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/data/versions/92.json"
+     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/data/versions/92.json"
     },
     {
-     "content_hash": "3f9b99a828d0c454",
+     "content_hash": "6d5bb7ff9a2e0c3c",
      "version_id": 93,
      "article_id": 10,
      "level_code": "en_b1",
@@ -109,7 +109,7 @@
      "has_audio": true,
      "audio": {
       "id": 83,
-      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/audio/10/en_b1.mp3",
+      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/audio/10/en_b1.mp3",
       "duration": 103.575,
       "size_bytes": 625248,
       "engine": "edge-tts",
@@ -117,10 +117,10 @@
       "word_count": 296,
       "has_timeline": true
      },
-     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/data/versions/93.json"
+     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/data/versions/93.json"
     },
     {
-     "content_hash": "2b7b1433ecdf1bed",
+     "content_hash": "98c8bb48d5a241f4",
      "version_id": 94,
      "article_id": 10,
      "level_code": "en_b2",
@@ -147,7 +147,7 @@
      "has_audio": true,
      "audio": {
       "id": 84,
-      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/audio/10/en_b2.mp3",
+      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/audio/10/en_b2.mp3",
       "duration": 107.75,
       "size_bytes": 650304,
       "engine": "edge-tts",
@@ -155,10 +155,10 @@
       "word_count": 304,
       "has_timeline": true
      },
-     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/data/versions/94.json"
+     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/data/versions/94.json"
     },
     {
-     "content_hash": "1e728d7e15d06a48",
+     "content_hash": "204a58125dd6364b",
      "version_id": 95,
      "article_id": 10,
      "level_code": "en_c1",
@@ -185,7 +185,7 @@
      "has_audio": true,
      "audio": {
       "id": 85,
-      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/audio/10/en_c1.mp3",
+      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/audio/10/en_c1.mp3",
       "duration": 135.475,
       "size_bytes": 816624,
       "engine": "edge-tts",
@@ -193,10 +193,10 @@
       "word_count": 360,
       "has_timeline": true
      },
-     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/data/versions/95.json"
+     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/data/versions/95.json"
     },
     {
-     "content_hash": "2081d0fa646bac5a",
+     "content_hash": "4eebae0fb4b28e46",
      "version_id": 101,
      "article_id": 11,
      "level_code": "en_a1",
@@ -223,7 +223,7 @@
      "has_audio": true,
      "audio": {
       "id": 91,
-      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/audio/11/en_a1.mp3",
+      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/audio/11/en_a1.mp3",
       "duration": 59.0,
       "size_bytes": 357840,
       "engine": "edge-tts",
@@ -231,10 +231,10 @@
       "word_count": 162,
       "has_timeline": true
      },
-     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/data/versions/101.json"
+     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/data/versions/101.json"
     },
     {
-     "content_hash": "0a7d6dae16b8d57c",
+     "content_hash": "2cd064c926bdb9e6",
      "version_id": 102,
      "article_id": 11,
      "level_code": "en_a2",
@@ -261,7 +261,7 @@
      "has_audio": true,
      "audio": {
       "id": 92,
-      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/audio/11/en_a2.mp3",
+      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/audio/11/en_a2.mp3",
       "duration": 65.236,
       "size_bytes": 395280,
       "engine": "edge-tts",
@@ -269,10 +269,10 @@
       "word_count": 175,
       "has_timeline": true
      },
-     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/data/versions/102.json"
+     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/data/versions/102.json"
     },
     {
-     "content_hash": "55a4ce84bd083f7f",
+     "content_hash": "99f1d104659cca9f",
      "version_id": 103,
      "article_id": 11,
      "level_code": "en_b1",
@@ -299,7 +299,7 @@
      "has_audio": true,
      "audio": {
       "id": 93,
-      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/audio/11/en_b1.mp3",
+      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/audio/11/en_b1.mp3",
       "duration": 88.6,
       "size_bytes": 535392,
       "engine": "edge-tts",
@@ -307,10 +307,10 @@
       "word_count": 249,
       "has_timeline": true
      },
-     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/data/versions/103.json"
+     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/data/versions/103.json"
     },
     {
-     "content_hash": "f1322aa5d318cdfc",
+     "content_hash": "411fa6510aabd644",
      "version_id": 104,
      "article_id": 11,
      "level_code": "en_b2",
@@ -337,7 +337,7 @@
      "has_audio": true,
      "audio": {
       "id": 94,
-      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/audio/11/en_b2.mp3",
+      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/audio/11/en_b2.mp3",
       "duration": 120.737,
       "size_bytes": 728208,
       "engine": "edge-tts",
@@ -345,10 +345,10 @@
       "word_count": 311,
       "has_timeline": true
      },
-     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/data/versions/104.json"
+     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/data/versions/104.json"
     },
     {
-     "content_hash": "dcab814a8c867a62",
+     "content_hash": "4c5ea87614301180",
      "version_id": 105,
      "article_id": 11,
      "level_code": "en_c1",
@@ -375,7 +375,7 @@
      "has_audio": true,
      "audio": {
       "id": 95,
-      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/audio/11/en_c1.mp3",
+      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/audio/11/en_c1.mp3",
       "duration": 104.425,
       "size_bytes": 630288,
       "engine": "edge-tts",
@@ -383,12 +383,12 @@
       "word_count": 262,
       "has_timeline": true
      },
-     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/data/versions/105.json"
+     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/data/versions/105.json"
     }
    ],
    "ja": [
     {
-     "content_hash": "15695fd0cccbebca",
+     "content_hash": "66bea855baf4a44a",
      "version_id": 96,
      "article_id": 10,
      "level_code": "ja_n5",
@@ -415,7 +415,7 @@
      "has_audio": true,
      "audio": {
       "id": 86,
-      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/audio/10/ja_n5.mp3",
+      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/audio/10/ja_n5.mp3",
       "duration": 66.225,
       "size_bytes": 401040,
       "engine": "edge-tts",
@@ -423,10 +423,10 @@
       "word_count": 205,
       "has_timeline": true
      },
-     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/data/versions/96.json"
+     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/data/versions/96.json"
     },
     {
-     "content_hash": "ea1b64f2740ea4b4",
+     "content_hash": "d557a2b682097c82",
      "version_id": 97,
      "article_id": 10,
      "level_code": "ja_n4",
@@ -453,7 +453,7 @@
      "has_audio": true,
      "audio": {
       "id": 87,
-      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/audio/10/ja_n4.mp3",
+      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/audio/10/ja_n4.mp3",
       "duration": 101.462,
       "size_bytes": 612576,
       "engine": "edge-tts",
@@ -461,10 +461,10 @@
       "word_count": 323,
       "has_timeline": true
      },
-     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/data/versions/97.json"
+     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/data/versions/97.json"
     },
     {
-     "content_hash": "1abe5abae486b40c",
+     "content_hash": "8b8985c579253209",
      "version_id": 98,
      "article_id": 10,
      "level_code": "ja_n3",
@@ -491,7 +491,7 @@
      "has_audio": true,
      "audio": {
       "id": 88,
-      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/audio/10/ja_n3.mp3",
+      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/audio/10/ja_n3.mp3",
       "duration": 118.575,
       "size_bytes": 715248,
       "engine": "edge-tts",
@@ -499,10 +499,10 @@
       "word_count": 381,
       "has_timeline": true
      },
-     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/data/versions/98.json"
+     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/data/versions/98.json"
     },
     {
-     "content_hash": "986a94e17ad56607",
+     "content_hash": "dcaebce6a8f53a9c",
      "version_id": 99,
      "article_id": 10,
      "level_code": "ja_n2",
@@ -529,7 +529,7 @@
      "has_audio": true,
      "audio": {
       "id": 89,
-      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/audio/10/ja_n2.mp3",
+      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/audio/10/ja_n2.mp3",
       "duration": 151.188,
       "size_bytes": 910800,
       "engine": "edge-tts",
@@ -537,10 +537,10 @@
       "word_count": 469,
       "has_timeline": true
      },
-     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/data/versions/99.json"
+     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/data/versions/99.json"
     },
     {
-     "content_hash": "926431602b91ed6a",
+     "content_hash": "b31341101511405d",
      "version_id": 100,
      "article_id": 10,
      "level_code": "ja_n1",
@@ -567,7 +567,7 @@
      "has_audio": true,
      "audio": {
       "id": 90,
-      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/audio/10/ja_n1.mp3",
+      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/audio/10/ja_n1.mp3",
       "duration": 222.963,
       "size_bytes": 1341504,
       "engine": "edge-tts",
@@ -575,10 +575,10 @@
       "word_count": 693,
       "has_timeline": true
      },
-     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/data/versions/100.json"
+     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/data/versions/100.json"
     },
     {
-     "content_hash": "20a535246d0ae87e",
+     "content_hash": "1abf06cfd94eb519",
      "version_id": 106,
      "article_id": 11,
      "level_code": "ja_n5",
@@ -605,7 +605,7 @@
      "has_audio": true,
      "audio": {
       "id": 96,
-      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/audio/11/ja_n5.mp3",
+      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/audio/11/ja_n5.mp3",
       "duration": 56.125,
       "size_bytes": 340416,
       "engine": "edge-tts",
@@ -613,10 +613,10 @@
       "word_count": 161,
       "has_timeline": true
      },
-     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/data/versions/106.json"
+     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/data/versions/106.json"
     },
     {
-     "content_hash": "604e136b51290690",
+     "content_hash": "e3767a4348223a59",
      "version_id": 107,
      "article_id": 11,
      "level_code": "ja_n4",
@@ -643,7 +643,7 @@
      "has_audio": true,
      "audio": {
       "id": 97,
-      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/audio/11/ja_n4.mp3",
+      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/audio/11/ja_n4.mp3",
       "duration": 76.725,
       "size_bytes": 464112,
       "engine": "edge-tts",
@@ -651,10 +651,10 @@
       "word_count": 208,
       "has_timeline": true
      },
-     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/data/versions/107.json"
+     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/data/versions/107.json"
     },
     {
-     "content_hash": "d6b4f9e74b3acb72",
+     "content_hash": "938d0afeb3f74af8",
      "version_id": 108,
      "article_id": 11,
      "level_code": "ja_n3",
@@ -681,7 +681,7 @@
      "has_audio": true,
      "audio": {
       "id": 98,
-      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/audio/11/ja_n3.mp3",
+      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/audio/11/ja_n3.mp3",
       "duration": 87.438,
       "size_bytes": 528336,
       "engine": "edge-tts",
@@ -689,10 +689,10 @@
       "word_count": 270,
       "has_timeline": true
      },
-     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/data/versions/108.json"
+     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/data/versions/108.json"
     },
     {
-     "content_hash": "840c9c51416766e3",
+     "content_hash": "efb29c0b98dce034",
      "version_id": 109,
      "article_id": 11,
      "level_code": "ja_n2",
@@ -719,7 +719,7 @@
      "has_audio": true,
      "audio": {
       "id": 99,
-      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/audio/11/ja_n2.mp3",
+      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/audio/11/ja_n2.mp3",
       "duration": 81.45,
       "size_bytes": 492480,
       "engine": "edge-tts",
@@ -727,10 +727,10 @@
       "word_count": 252,
       "has_timeline": true
      },
-     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/data/versions/109.json"
+     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/data/versions/109.json"
     },
     {
-     "content_hash": "fe59a4b67dad6468",
+     "content_hash": "ea83dc51ce36d7a6",
      "version_id": 110,
      "article_id": 11,
      "level_code": "ja_n1",
@@ -757,7 +757,7 @@
      "has_audio": true,
      "audio": {
       "id": 100,
-      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/audio/11/ja_n1.mp3",
+      "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/audio/11/ja_n1.mp3",
       "duration": 126.938,
       "size_bytes": 765360,
       "engine": "edge-tts",
@@ -765,7 +765,7 @@
       "word_count": 374,
       "has_timeline": true
      },
-     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/data/versions/110.json"
+     "detail_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/data/versions/110.json"
     }
    ]
   }
@@ -773,8 +773,8 @@
  "dates": [
   "2026-10-06"
  ],
- "base_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content",
- "index_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@511d553/content/data/index.json",
+ "base_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content",
+ "index_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@34d4917/content/data/index.json",
  "levels": [
   {
    "code": "en_a1",
@@ -838,8 +838,8 @@
   }
  ],
  "version": {
-  "published_at": "2026-10-07T00:28:34.079673+00:00",
-  "content_hash": "52ea633a3fb6",
+  "published_at": "2026-10-07T00:41:23.179074+00:00",
+  "content_hash": "50f27ebf315e",
   "tip": "本文件即最新版；若published_at 明显早于当前时间，说明命中了 CDN 旧缓存"
  }
 }
