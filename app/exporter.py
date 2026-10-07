@@ -294,6 +294,14 @@ def export_all(db: Session) -> dict[str, Any]:
         ).scalars().all()
         day_keys = [export_day(db, d) for d in dates if d]
         idx = export_index(db)
+
+        # 同步短路径入口 content/index.json —— App 拉的是这个路径，
+        # 若只写 data/index.json 会导致短路径长期停留在旧版本。
+        canonical = get_storage().read(idx)
+        if canonical:
+            get_storage().put("index.json", canonical,
+                              content_type="application/json; charset=utf-8")
+
         return {"exported": True, "day_keys": day_keys, "index_key": idx}
     except Exception as exc:  # noqa: BLE001
         log.error("[export] 失败: %s", exc)
