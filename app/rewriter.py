@@ -15,6 +15,9 @@ from .levels import LevelSpec
 
 log = logging.getLogger(__name__)
 
+# LLM 单次改写的最大尝试次数（JSON 格式错误属偶发，重试即可）
+_MAX_ATTEMPTS = 2
+
 
 @dataclass(slots=True)
 class RewriteResult:
@@ -465,11 +468,28 @@ async def rewrite_article(
         return _degraded(topic, title, source, spec)
 
     user = _user_prompt(topic, title, source, spec)
-    try:
-        raw = await llm.complete(SYSTEM_PROMPT, user)
-        data = parse_json_loose(raw)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("[llm] %s 改写失败(%s)，降级离线: %s", llm.name, exc, spec.code)
+
+    # LLM 返回的 JSON 偶发格式错误（未转义引号、截断），重试一次通常就好。
+    # 之前是失败即降级 —— 会静默产出「无译文」的内容，App 侧无法感知。
+    data: dict[str, Any] | None = None
+    last_exc: Exception | None = None
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            raw = await llm.complete(SYSTEM_PROMPT, user)
+            data = parse_json_loose(raw)
+            if _as_list(data.get("paragraphs")):
+                break
+            last_exc = ValueError("返回空正文")
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            log.warning("[llm] %s 第 %d/%d 次解析失败: %s",
+                        spec.code, attempt, _MAX_ATTEMPTS, exc)
+            data = None
+        if attempt < _MAX_ATTEMPTS:
+            await asyncio.sleep(1.5 * attempt)
+
+    if data is None:
+        log.warning("[llm] %s 改写最终失败(%s)，降级离线", llm.name, last_exc, spec.code)
         return _degraded(topic, title, source, spec)
 
     paragraphs = _as_list(data.get("paragraphs"))[:8]
@@ -485,6 +505,19 @@ async def rewrite_article(
         log.warning("[llm] %s 中译段落数不符(%d vs %d)，丢弃中文字段",
                     spec.code, len(zh_paras), len(paragraphs))
         zh_paras = []
+        # 再试一次：段数不符常因正文尾部被截断，重试能拿到完整的两份
+        if _MAX_ATTEMPTS > 1:
+            try:
+                raw2 = await llm.complete(SYSTEM_PROMPT, user)
+                d2 = parse_json_loose(raw2)
+                p2 = _as_list(d2.get("paragraphs"))[:8]
+                z2 = _as_list(d2.get("paragraphs_zh"))[:len(p2)]
+                if p2 and len(z2) == len(p2) and d2.get("title_zh"):
+                    log.info("[llm] %s 重试成功，译文已对齐", spec.code)
+                    paragraphs, zh_paras = p2, z2
+                    data = d2
+            except Exception as exc:  # noqa: BLE001
+                log.warning("[llm] %s 重试仍失败: %s", spec.code, exc)
 
     return RewriteResult(
         level_code=spec.code,
