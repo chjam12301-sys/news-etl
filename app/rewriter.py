@@ -30,6 +30,9 @@ class RewriteResult:
     title_zh: str = ""
     lead_zh: str = ""
     paragraphs_zh: list[str] = field(default_factory=list)
+    # True 表示这一份是**离线降级产物**：正文是原文裁剪，没有中文译文。
+    # 调用方应据此决定丢弃或重试，避免把「无译文」的坏数据当正常内容发布。
+    degraded: bool = False
 
     @property
     def body(self) -> str:
@@ -346,10 +349,44 @@ def _as_vocab(value: Any, lang: str, limit: int) -> list[dict[str, Any]]:
 _SENT_SPLIT = re.compile(r"(?<=[.!?。！？])\s+")
 
 
+def _degraded(topic: str, title: str, text: str, spec: LevelSpec) -> RewriteResult:
+    """离线降级的统一出口：打上 degraded 标记后返回。"""
+    r = offline_rewrite(topic, title, text, spec)
+    r.degraded = True
+    log.warning("[llm] %s 使用降级内容（无译文）", spec.code)
+    return r
+
+
 def offline_rewrite(topic: str, title: str, text: str, spec: LevelSpec) -> RewriteResult:
-    """无 LLM 时的启发式降级：分句 → 按等级截断/裁剪，保证 schema 一致。"""
+    """无 LLM 时的启发式降级：分句 → 按等级截断/裁剪，保证 schema 一致。
+
+    注意：降级产出的正文是**原文裁剪**，没有中文译文（LLM 才产出译文）。
+    因此调用方需读RewriteResult.degraded，据此决定是否入库/重试。
+    """
     flat = re.sub(r"\s*\n\s*\n\s*", "\n\n", text).strip()
     paras = [p.strip() for p in flat.split("\n\n") if p.strip()] or [title]
+
+    # 原文常整段无空行（尤其抓来的正文），按\n\n 切不开会退化成 1 段
+    # 1000+ 字的大段 —— 那既不像该等级的长度，也没有译文，App 侧无法处理。
+    # 这里再按单换行/句号二次切分，确保段落粒度可用。
+    refined: list[str] = []
+    for p in paras:
+        if len(p) > 400 and len(_SENT_SPLIT.split(p)) >= 3:
+            sents = [s.strip() for s in _SENT_SPLIT.split(p) if s.strip()]
+            buf: list[str] = []
+            size = 0
+            for sent in sents:
+                buf.append(sent)
+                size += len(sent.split())
+                # 每段3~5 句、约 60~110 词，接近各等级目标段长
+                if len(buf) >= 4 or size >= 90:
+                    refined.append(" ".join(buf))
+                    buf, size = [], 0
+            if buf:
+                refined.append(" ".join(buf))
+        else:
+            refined.append(p)
+    paras = refined or paras
 
     # 低等级取前 2 段并逐句裁剪；高等级保留更多
     keep_paras = {1: 2, 2: 2, 3: 3, 4: 4, 5: 5}[spec.level]
@@ -425,7 +462,7 @@ async def rewrite_article(
     llm = llm or get_llm()
     if llm is None:
         log.info("[llm] 无可用 key，离线降级: %s", spec.code)
-        return offline_rewrite(topic, title, source, spec)
+        return _degraded(topic, title, source, spec)
 
     user = _user_prompt(topic, title, source, spec)
     try:
@@ -433,12 +470,12 @@ async def rewrite_article(
         data = parse_json_loose(raw)
     except Exception as exc:  # noqa: BLE001
         log.warning("[llm] %s 改写失败(%s)，降级离线: %s", llm.name, exc, spec.code)
-        return offline_rewrite(topic, title, source, spec)
+        return _degraded(topic, title, source, spec)
 
     paragraphs = _as_list(data.get("paragraphs"))[:8]
     if not paragraphs:
         log.warning("[llm] %s 返回空正文，降级离线", spec.code)
-        return offline_rewrite(topic, title, source, spec)
+        return _degraded(topic, title, source, spec)
 
     title_out = str(data.get("title") or title).strip()[:120]
 
@@ -473,7 +510,7 @@ async def rewrite_all(
     async def run(spec: LevelSpec) -> RewriteResult:
         # 离线模式不并发，避免无意义占用；LLM 模式并发 3 路以避开免费额度限流
         if llm is None:
-            return offline_rewrite(topic, title, text, spec)
+            return _degraded(topic, title, text, spec)
         sem = asyncio.Semaphore(3)
         async with sem:
             return await rewrite_article(topic, title, text, spec, llm)
