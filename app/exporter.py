@@ -15,6 +15,7 @@ App 两种读法：
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import logging
 from typing import Any
@@ -258,13 +259,28 @@ def export_index(db: Session, days: int = MAX_DAYS_IN_INDEX) -> str:
             by_lang.setdefault(v.lang, []).append(_version_summary(v, a, base, rev))
         latest = {"date": d.isoformat(), "versions": by_lang}
 
+    generated_at = dt.datetime.now(dt.timezone.utc).isoformat()
+
+    # 内容指纹：随内容变化，App 可据此判断拉到的索引是不是最新的
+    content_hash = hashlib.sha256(
+        json.dumps(
+            {lg: [i["content_hash"] for i in items] for lg, items in by_lang.items()},
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()[:12]
+
     payload = {
         "service": settings.app_name,
-        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "generated_at": generated_at,
         "latest": latest,
         "dates": [d.isoformat() for d in date_list],
         "base_url": base or "",
         "index_url": f"{base}/{index_key()}" if base else "",
+        "version": {
+            "published_at": generated_at,
+            "content_hash": content_hash,
+            "tip": "本文件即最新版；若published_at 明显早于当前时间，说明命中了 CDN 旧缓存",
+        },
         "levels": [
             {"code": c, "label": lb, "lang": lg, "level": lv}
             for c, lb, lg, lv in _all_levels()
