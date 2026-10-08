@@ -198,3 +198,31 @@ class TestHighlightFieldsAreCovered:
              {"w": "B", "sm": 1, "em": 2, "cs": 2, "ce": 3, "si": 0}]
         b = list(reversed(a))
         assert timeline_fingerprint(a) != timeline_fingerprint(b)
+
+
+class TestIndexVersionField:
+    """回归：index.json 的 version 字段曾因只靠手工补而丢失，
+    导致 App 无法自证索引是否最新（线上表现为「拉不到新文章」）。"""
+
+    def test_export_index_includes_version(self):
+        import inspect
+
+        from app import exporter
+
+        src = inspect.getsource(exporter.export_index)
+        assert '"version"' in src, "export_index 必须输出 version 字段"
+        assert "published_at" in src and "content_hash" in src
+
+    def test_version_hash_tracks_content(self):
+        """version.content_hash 由各条目的 content_hash 汇总，
+        内容变则变。"""
+        import hashlib
+        import json
+
+        by_lang = {"en": [{"content_hash": "aaa"}, {"content_hash": "bbb"}]}
+        h1 = hashlib.sha256(
+            json.dumps(by_lang, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+        by_lang["en"].append({"content_hash": "ccc"})
+        h2 = hashlib.sha256(
+            json.dumps(by_lang, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+        assert h1 != h2
