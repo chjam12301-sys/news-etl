@@ -1,7 +1,7 @@
 {
- "ref": "0605a4d0ea5a209af6b5d41aee306f72df24f0c2",
- "updated_at": "2026-10-08T13:07:21.888873+00:00",
- "index_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@0605a4d0ea5a209af6b5d41aee306f72df24f0c2/content/index.json",
+ "ref": "13b8582beba1b6c9159b868a31a2f3b53927d021",
+ "updated_at": "2026-10-08T14:02:01.167370+00:00",
+ "index_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@13b8582beba1b6c9159b868a31a2f3b53927d021/content/index.json",
  "main_index_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@main/content/index.json",
  "hint": "取 index_url（固定 ref，无缓存问题）；若想每次都拿最新，可读 main_index_url 但需自行校验 其 version.published_at 是否够新"
 }
