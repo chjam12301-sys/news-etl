@@ -1,0 +1,68 @@
+name: 诊断 R2 连通性
+
+# 一次性诊断：GitHub Actions runner 到 Cloudflare R2 到底卡在哪一步。
+on:
+  workflow_dispatch:
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 分层探测
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          set +e
+          EP="$R2_ENDPOINT"
+          HOST="${EP#https://}"
+          echo "== 1. DNS =="
+          getent ahosts "$HOST" | head -4
+          echo "== 2. aws cli =="
+          (aws --version 2>&1 | head -1)
+          echo "== 3. TLS 握手（openssl）=="
+          timeout 25 openssl s_client -connect "$HOST:443" -servername "$HOST" </dev/null 2>&1 \
+            | grep -E "^(New|Cipher|Protocol|SSL|verify|depth)|alert|error" | head -8
+          echo "== 4. curl HTTPS =="
+          curl -s -o /dev/null -m 25 -w "  默认: %{http_code}  %{time_total}s\n" "https://$HOST/"
+          curl -s -4 -o /dev/null -m 25 -w "  IPv4: %{http_code}  %{time_total}s\n" "https://$HOST/"
+          curl -s -6 -o /dev/null -m 25 -w "  IPv6: %{http_code}  %{time_total}s\n" "https://$HOST/"
+          echo "== 5. boto3 直传（20s 超时）=="
+          pip -q install boto3
+          timeout 40 python - <<'PY'
+          import os, time, boto3
+          from botocore.config import Config
+          for label, kw in [
+              ("default", {}),
+              ("no-verify", {"verify": False}),
+              ("path+auto", {"config": Config(signature_version="s3v4",
+                                               s3={"addressing_style": "path"},
+                                               retries={"max_attempts": 1})}),
+          ]:
+              try:
+                  c = boto3.client("s3", endpoint_url=os.environ["R2_ENDPOINT"],
+                                   aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+                                   aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+                                   region_name="auto", **kw)
+                  t = time.time()
+                  c.put_object(Bucket=os.environ["R2_BUCKET"], Key="diag/probe.txt",
+                               Body=b"ok", ContentType="text/plain")
+                  print(f"  {label}: OK {time.time()-t:.1f}s")
+              except Exception as exc:
+                  print(f"  {label}: {type(exc).__name__} {str(exc)[:110]}")
+          PY
+          echo "== 6. aws cli 直传（60s 超时）=="
+          echo ok > /tmp/probe.txt
+          timeout 60 aws s3 cp /tmp/probe.txt "s3://$R2_BUCKET/diag/probe.txt" \
+            --endpoint-url "$EP" --no-progress 2>&1 | tail -3
+          echo "  exit=$?"
+          echo "== 7. 公开域名 =="
+          curl -s -o /dev/null -m 20 -w "  r2.dev: %{http_code}\n" \
+            "https://pub-aba43a6fb1db4dc08fede1dbc81f3241.r2.dev/diag/probe.txt"
+          set -e
