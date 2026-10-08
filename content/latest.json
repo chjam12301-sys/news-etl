@@ -1,7 +1,7 @@
 {
- "ref": "53cb8ab",
- "content_ref": "53cb8ab",
- "index_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@53cb8ab/content/index.json",
- "updated_at": "2026-10-06T15:58:54.957397+00:00",
- "hint": "拉 index_url；detail_url/audio.url 已固定 SHA，可永久缓存"
+ "ref": "7ada91c",
+ "updated_at": "2026-10-08T09:35:39.683185+00:00",
+ "index_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@7ada91c/content/index.json",
+ "main_index_url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@main/content/index.json",
+ "hint": "取 index_url（固定 ref，无缓存问题）；若想每次都拿最新，可读 main_index_url 但需自行校验 其 version.published_at 是否够新"
 }
