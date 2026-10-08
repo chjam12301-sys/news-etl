@@ -98,6 +98,10 @@ class GitHubStorage:
         # content/ 在 .gitignore 里（避免日常 git add 误提交），
         # 这里用 -f 强制加入 —— 内容本来就该进仓库供CDN 读取
         self._git("add", "-f", CONTENT_DIR, check=False)
+        # 音频例外：jsDelivr 单仓库 50MB 上限，音频一律由对象存储提供。
+        # -f 会无视 .gitignore，所以这里显式摘掉，防止历史残留文件被重新入库。
+        self._git("rm", "-r", "--cached", "--quiet", "--ignore-unmatch",
+                  f"{CONTENT_DIR}/audio", check=False)
         r = self._git("status", "--porcelain", "--", CONTENT_DIR, check=False)
         if not r.stdout.strip():
             log.info("[gh] content/ 无变化")
@@ -268,44 +272,76 @@ class GitHubStorage:
                 total += f.stat().st_size
         return total
 
-    def prune(self, keep_days: int = RETENTION_DAYS) -> dict[str, Any]:
-        """删除 keep_days 天前的音频与 JSON，避免仓库无限膨胀。
+    def prune(self, keep_days: int = RETENTION_DAYS,
+             max_mb: float = 0.0) -> dict[str, Any]:
+        """删除过期内容，避免仓库无限膨胀。
 
-        按文件修改时间判定，保留每天的 index.json（最新一天要留）。
+        两个维度：
+          1. keep_days —— 按音频目录名（文章 id）与版本 JSON 里的
+             published_date 判断，与 mtime 无关。CI 里 checkout 会把所有
+             文件的 mtime 重置成checkout 时间，按 mtime 判会导致永远清不掉。
+          2. max_mb —— 总量上限。jsDelivr 单仓库超过 50MB 会全站返回
+             403（Package size exceeded），必须留足余量。
         """
         import datetime as dt
+        import json as _json
 
-        cutoff = dt.datetime.now().timestamp() - keep_days * 86400
+        cutoff = (dt.date.today() - dt.timedelta(days=keep_days)).isoformat()
         removed = 0
         freed = 0
 
-        for f in self.content_root.rglob("*"):
+        def _pub_date(p: Path) -> str:
+            """尽力取出该文件对应的发布日期。"""
+            if p.suffix == ".json":
+                try:
+                    d = _json.loads(p.read_text(encoding="utf-8"))
+                    return str(d.get("published_date") or d.get("date") or "")
+                except Exception:  # noqa: BLE001
+                    return ""
+            # audio/<article_id>/<level>.mp3 -> 查该article 的最新 JSON
+            if p.parent.parent.name == "audio":
+                aid = p.parent.name
+                for vp in (self.content_root / "data" / "versions").glob("*.json"):
+                    try:
+                        d = _json.loads(vp.read_text(encoding="utf-8"))
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if str(d.get("article_id")) == aid:
+                        return str(d.get("published_date") or "")
+                return ""
+            return ""
+
+        for f in sorted(self.content_root.rglob("*"), key=lambda x: len(x.parts), reverse=True):
             if not f.is_file():
                 continue
-            if f.stat().st_mtime >= cutoff:
-                continue
-            # 当天的总索引永远保留
             if f.name == "index.json" and f.parent == self.content_root:
+                continue
+
+            # 先按体积上限删最旧的，直到降到上限内
+            over = False
+            if max_mb > 0:
+                total = self.used_bytes()
+                if total <= max_mb * 1024 * 1024:
+                    over = False
+                else:
+                    over = True
+
+            d = _pub_date(f)
+            expired = bool(d) and d < cutoff
+            if not (expired or over):
                 continue
             try:
                 freed += f.stat().st_size
                 f.unlink()
                 removed += 1
-            except OSError as exc:
-                log.warning("[gh] 删除 %s 失败: %s", f, exc)
+            except OSError:
+                pass
 
-        # 清掉空目录
-        for d in sorted(self.content_root.rglob("*"), reverse=True):
-            if d.is_dir() and not any(d.iterdir()):
-                try:
-                    d.rmdir()
-                except OSError:
-                    pass
-
-        if removed:
-            self._commit(f"content: 清理 {keep_days} 天前的旧文件")
-        log.info("[gh] 清理完成：删除 %d 个文件，释放 %.1f MB", removed, freed / 1024 / 1024)
-        return {"deleted": removed, "bytes": freed}
+        log.info("[gh] 清理 %d 个文件，释放 %.1f MB（保留 %d 天，上限 %s MB）",
+                 removed, freed / 1024 / 1024, keep_days,
+                 f"{max_mb:.0f}" if max_mb else "无")
+        return {"deleted": removed, "bytes": freed,
+                "size_mb": round(self.used_bytes() / 1024 / 1024, 1)}
 
     def prune_json(self, keep_days: int = RETENTION_DAYS) -> dict[str, Any]:
         """JSON 体积小，可以留久一点。"""

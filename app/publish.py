@@ -43,6 +43,8 @@ class VerifyResult:
     identity_mismatch: list[str] = field(default_factory=list)
     # 链接指向的 commit 与被校验的 commit 不一致（链接本身就已失效）
     stale_rev: list[str] = field(default_factory=list)
+    # 音频探测失败的具体原因（对象存储场景）
+    audio_errors: list[str] = field(default_factory=list)
     error: str = ""
 
     def summary(self) -> str:
@@ -59,7 +61,29 @@ class VerifyResult:
             parts.append(f"身份不符 {self.identity_mismatch[:5]}")
         if self.stale_rev:
             parts.append(f"链接 commit 错位 {len(self.stale_rev)} 处: {self.stale_rev[:5]}")
+        if self.audio_errors:
+            parts.append(f"音频探测失败 {self.audio_errors[:3]}")
         return "；".join(parts)
+
+
+# jsDelivr 单仓库上限50MB —— 超过后所有请求返回 403
+# "Package size exceeded the configured limit of 50 MB"
+JSDELIVR_LIMIT_MB = 50
+
+
+def repo_size_mb(repo_dir: str) -> float:
+    """当前工作区 content/ 的体积（MB），用来对照 jsDelivr 上限。"""
+    import os
+
+    total = 0
+    root = os.path.join(repo_dir, "content")
+    for dirpath, _dirs, files in os.walk(root):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, f))
+            except OSError:
+                pass
+    return total / 1024 / 1024
 
 
 def _rel(url: str) -> str:
@@ -93,12 +117,49 @@ def _read_in_commit(repo_dir: str, rev: str, rel: str) -> bytes | None:
     return p.stdout if p.returncode == 0 else None
 
 
+def head_ok(url: str, *, timeout: float = 15.0, retries: int = 3) -> tuple[bool, str]:
+    """探测对象存储上的音频是否真的可访问。
+
+    音频已迁出 Git（jsDelivr 50MB 上限），只能靠 HTTP 探测。
+    明确 404/410 直接判失败不重试；网络抖动则退避重试。
+    """
+    import time
+    import urllib.error
+    import urllib.request
+
+    last = ""
+    for i in range(retries):
+        try:
+            req = urllib.request.Request(
+                url, method="HEAD", headers={"User-Agent": "news-etl-publish/1.0"}
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310
+                if 200 <= r.status < 400:
+                    return True, ""
+                last = f"HTTP {r.status}"
+        except urllib.error.HTTPError as exc:
+            last = f"HTTP {exc.code}"
+            if exc.code in (404, 410):
+                return False, last       # 确实不存在，重试无意义
+        except Exception as exc:  # noqa: BLE001
+            last = f"{type(exc).__name__}: {exc}"
+        if i < retries - 1:
+            time.sleep(2 * (i + 1))
+    return False, last
+
+
+def _is_git_content_url(url: str) -> bool:
+    """音频还在 Git 里时的旧式地址（cdn.../content/audio/...）。"""
+    return "/content/" in url
+
+
 def verify_published(
     *,
     repo_dir: str,
     rev: str,
     index: dict[str, Any],
     check_hash: bool = True,
+    head=head_ok,
 ) -> VerifyResult:
     """校验索引引用的每一份详情与音频在 rev 下确实存在且内容一致。
 
@@ -146,12 +207,26 @@ def verify_published(
             res.ok = False
             continue
 
-        a_url = (it.get("audio") or {}).get("url", "")
-        a_rel = _rel(a_url) if a_url else ""
-        a_rev = _rev_in_url(a_url)
-        if not a_rel or not _exists_in_commit(repo_dir, a_rev or rev, a_rel):
-            res.missing_audio.append(vid)
-            res.ok = False
+        a_url = (it.get("audio") or {}).get("url", "") or ""
+        if a_url:
+            if _is_git_content_url(a_url):
+                # 旧式：音频在 Git 里，按 URL 自己的 commit 查
+                a_rel = _rel(a_url)
+                a_rev = _rev_in_url(a_url)
+                if not a_rel or not _exists_in_commit(repo_dir, a_rev or rev, a_rel):
+                    res.missing_audio.append(vid)
+                    res.ok = False
+            elif not a_url.startswith("http"):
+                # 相对路径 = 没配对象存储，不能对外发布
+                res.missing_audio.append(vid)
+                res.ok = False
+                res.audio_errors.append(f"v{vid} 音频 URL 非 http: {a_url}")
+            else:
+                ok, why = head(a_url)
+                if not ok:
+                    res.missing_audio.append(vid)
+                    res.ok = False
+                    res.audio_errors.append(f"v{vid} 音频不可访问({why}): {a_url}")
 
         if check_hash:
             raw = _read_in_commit(repo_dir, d_rev or rev, d_rel)
@@ -193,6 +268,26 @@ def publish_all(*, db, storage, topics_days: int = 3, commit_msg: str = "content
 
     st = storage
     result: dict[str, Any] = {"ok": False}
+
+    # ── ⓪ 体积闸门：jsDelivr 超过 50MB 会全站 403 ───────────────────
+    size_before = repo_size_mb(st.repo_dir)
+    if size_before > JSDELIVR_LIMIT_MB * 0.8:
+        log.warning("[publish] content 体积 %.1fMB 接近 jsDelivr 上限 %dMB，先清理",
+                    size_before, JSDELIVR_LIMIT_MB)
+        pruned = st.prune(keep_days=3)      # 超期内容清掉
+        size_after = repo_size_mb(st.repo_dir)
+        log.info("[publish] 清理后 %.1fMB（删除 %d 个文件）",
+                 size_after, pruned["deleted"])
+        result["pruned"] = pruned["deleted"]
+        result["size_mb"] = round(size_after, 1)
+        if size_after > JSDELIVR_LIMIT_MB:
+            log.error("[publish] 清理后仍超上限 %.1fMB，需人工介入",
+                      size_after)
+            result["ok"] = False
+            result["reason"] = "size_exceeded"
+            return result
+    else:
+        result["size_mb"] = round(size_before, 1)
 
     # ── ① 提交内容（详情 + 音频 + 按日索引），不含全量索引 ──────────
     dates = db.execute(

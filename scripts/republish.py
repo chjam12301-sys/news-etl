@@ -41,11 +41,11 @@ if _ENV.is_file():
             _k, _v = _line.split("=", 1)
             os.environ[_k.strip()] = _v.strip()
 
-os.environ.setdefault(
-    "DATABASE_URL",
-    "postgresql://neondb_owner:npg_MbZs6iN8axdj@"
-    "ep-quiet-art-b3edqp3u-pooler.c-4.ap-southeast-1.aws.neon.tech/neondb?sslmode=require",
-)
+# 数据库连接一律从环境取（DATABASE_URL）。本仓库是 public，
+# 任何凭据都不能写进代码 —— 需要时放进 .env 或 Actions Secrets。
+if not os.environ.get("DATABASE_URL"):
+    print("✗ 缺少 DATABASE_URL（用 .env 或 Actions Secrets 注入）", file=sys.stderr)
+    raise SystemExit(2)
 
 logging.basicConfig(
     level=logging.INFO,

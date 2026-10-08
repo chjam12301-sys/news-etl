@@ -1,0 +1,58 @@
+name: 音频迁出 Git（一次性）
+
+# 为什么：jsDelivr 单仓库 50MB 上限，音频 214MB 会把仓库撑爆，
+# 超限后任何新路径都返回 403。音频改由对象存储提供，仓库只留 JSON。
+#
+# 跑完一次即可，之后音频由每日流水线直接写对象存储。
+on:
+  workflow_dispatch:
+    inputs:
+      drop_git:
+        description: '上传后从 Git 移除 content/audio'
+        required: false
+        default: 'true'
+      force:
+        description: '即使对象已存在也重新上传'
+        required: false
+        default: 'false'
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 迁移音频到对象存储
+        env:
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          ARGS=""
+          if [ "${{ inputs.drop_git }}" = "true" ]; then ARGS="$ARGS --drop-git"; fi
+          if [ "${{ inputs.force }}" = "true" ]; then ARGS="$ARGS --force"; fi
+          python -m scripts.upload_audio $ARGS
+
+      - name: 仓库体积
+        run: |
+          echo "content: $(du -sh content 2>/dev/null | cut -f1)"
+          echo "已跟踪音频: $(git ls-files content/audio | wc -l) 个"

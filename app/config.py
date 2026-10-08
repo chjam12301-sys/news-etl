@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     r2_endpoint: str = ""            # https://<accountid>.r2.cloudflarestorage.com
     r2_public_base: str = ""         # 自定义公开域名，留空则用签名 URL
 
+    # ---- 音频托管（音频不进 Git，避免仓库超 jsDelivr 的 50MB 上限）----
+    # 显式指定音频对外基址；留空则依次回退 r2_public_base → b2_public_base
+    # → Supabase。全部为空 = 未配置对象存储，发布校验会拦下（不产出坏链接）。
+    audio_public_base: str = ""
+
     # ---- 存储后端选择 ----
     # r2    : Cloudflare R2（S3 兼容）
     # b2    : Backblaze B2（S3 兼容，用 keyId:applicationKey 两段式认证）

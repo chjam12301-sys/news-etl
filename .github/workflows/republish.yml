@@ -1,0 +1,60 @@
+name: 重新发布索引
+
+# 修正索引内部链接（详情 / 音频地址）并更新 latest 指针。
+# 顺序固定：① 提交内容 → ② 用该 commit 生成索引 → ③ 全量校验 → ④ 更新指针。
+# 任何一步失败都不更新 latest，App 继续用上一份可用索引。
+on:
+  workflow_dispatch:
+    inputs:
+      dry:
+        description: '只校验现状，不改动'
+        required: false
+        default: 'false'
+
+concurrency:
+  group: daily-news
+  cancel-in-progress: false
+
+jobs:
+  republish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 重新发布
+        env:
+          STORAGE_BACKEND: github
+          GITHUB_CONTENT_REPO: ${{ github.repository }}
+          GITHUB_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_KEEP_DAYS: "14"
+          PUBLIC_BASE_URL: https://cdn.jsdelivr.net/gh/${{ github.repository }}@main/content
+
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
+
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ "${{ inputs.dry }}" = "true" ]; then
+            python scripts/republish.py --dry
+          else
+            python scripts/republish.py
+          fi

@@ -16,6 +16,7 @@ from .db import Article, ArticleVersion, AudioAsset, JobRun, SessionLocal, init_
 from .fetcher import RawArticle, collect
 from .levels import ALL_LEVELS
 from .rewriter import get_llm, rewrite_all
+from .audio_store import get_audio_storage, public_audio_url
 from .storage import audio_key, get_storage
 from .tts import synthesize
 
@@ -156,7 +157,8 @@ async def _process_article(
     db.flush()
 
     if with_tts and settings.tts_enabled:
-        storage = get_storage()
+        # 音频走对象存储，**不进 Git**（jsDelivr 有 50MB 仓库上限）
+        storage = get_audio_storage()
         # 容量护栏：超上限直接跳过配音，避免写入 R2 时产生费用
         try:
             from .storage_guard import check_capacity
@@ -193,7 +195,8 @@ async def _process_article(
                         voice=res.voice,
                         # 库里存对象 key，不再是本地绝对路径
                         file_path=key,
-                        public_url=obj.url or "",
+                        # 以配置基址为准，保证与导出时的拼法完全一致
+                        public_url=public_audio_url(file_path=key) or obj.url or "",
                         duration_ms=int(res.duration * 1000),
                         size_bytes=len(res.audio_bytes),
                         timeline=res.timeline_dict(),

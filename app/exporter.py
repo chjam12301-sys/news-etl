@@ -23,6 +23,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from .audio_store import public_audio_url
 from .config import settings
 from .db import Article, ArticleVersion
 from .storage import (
@@ -41,12 +42,19 @@ def _audio_meta(v: ArticleVersion, base: str, rev: str = "") -> dict[str, Any] |
     a = v.audio
     if not a:
         return None
-    # 不用 a.public_url —— 它是入库时写的旧地址（可能还带 @main）。
-    # 统一用本次导出的 base（已替换成 commit SHA），保证 URL 与本次提交一致。
-    url = (
-        f"{base}/audio/{v.article_id}/{v.level_code}.mp3"
-        if base else f"/api/v1/audio/{a.id}.mp3"
+    # 音频托管在对象存储：URL 与 commit 无关，永久稳定（内容更新由
+    # content_hash 驱动，不靠换 URL）。只有未配置对象存储时才退回 CDN 路径。
+    url = public_audio_url(
+        file_path=a.file_path or "",
+        article_id=v.article_id,
+        level_code=v.level_code,
     )
+    if not url:
+        ext = (a.file_path or "").rsplit(".", 1)[-1] if "." in (a.file_path or "") else "mp3"
+        url = (
+            f"{base}/audio/{v.article_id}/{v.level_code}.{ext}"
+            if base else f"/api/v1/audio/{a.id}.mp3"
+        )
     return {
         "id": a.id,
         "url": url,

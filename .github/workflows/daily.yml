@@ -89,12 +89,21 @@ jobs:
 
       - name: 生成内容（抓取 → 中英日改写 → TTS+时间轴 → 导出 → 提交）
         env:
-          # 存储：GitHub 仓库 + jsDelivr CDN（runner 到 R2/B2/Supabase 的上传 API 皆不通）
+          # JSON：GitHub 仓库 + jsDelivr CDN（保留 @<commit> 不可变版本能力）
           STORAGE_BACKEND: github
           GITHUB_CONTENT_REPO: ${{ github.repository }}
           GITHUB_BRANCH: ${{ github.event.repository.default_branch }}
           GITHUB_KEEP_DAYS: "14"
           PUBLIC_BASE_URL: https://cdn.jsdelivr.net/gh/${{ github.repository }}@main/content
+
+          # 音频：对象存储（R2）。音频不进 Git —— jsDelivr 单仓库 50MB 上限，
+          # 音频 214MB 会把仓库撑爆，导致新路径一律 403。
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
+          STORAGE_LIMIT_GB: "8"
 
           # 数据库
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -123,9 +132,20 @@ jobs:
           set +e
           echo "--- content/ 产物 ---"
           ls -1 content/ 2>/dev/null || echo "(无)"
-          echo "音频: $(find content/audio -name '*.mp3' 2>/dev/null | wc -l) 个"
           echo "详情JSON: $(find content/data/versions -name '*.json' 2>/dev/null | wc -l) 份"
-          echo "仓库体积: $(du -sh content 2>/dev/null | cut -f1)"
+          MB=$(du -sm content 2>/dev/null | cut -f1)
+          echo "仓库体积: ${MB}MB （jsDelivr 上限 50MB）"
+          if [ "${MB:-0}" -gt 40 ]; then echo "  ⚠️ 接近上限，需清理"; fi
+          echo "--- 音频是否走对象存储 ---"
+          python - <<'PY'
+          import json
+          try:
+              d = json.load(open("content/index.json", encoding="utf-8"))
+              v = d["latest"]["versions"]["en"] or d["latest"]["versions"]["ja"]
+              print("  audio.url =", (v[0].get("audio") or {}).get("url"))
+          except Exception as exc:
+              print("  (无法读取索引)", exc)
+          PY
           echo "--- 自检：中译与时间轴 ---"
           python - <<'PY'
           import json, glob
