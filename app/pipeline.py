@@ -313,22 +313,35 @@ async def run_daily(
         db.commit()
         db.close()
 
-    # GitHub 存储：把产物提交上去（Actions 里 content/ 必须在 commit 里才会被 CDN 收录）
+    # 发布：① 提交内容 → ② 用该 commit 生成索引 → ③ 校验 → ④ 更新指针
+    # 顺序不能颠倒：索引里的 detail_url / audio.url 必须在内容提交后才生成，
+    # 否则会指向不含这些文件的旧 commit（首页能显示卡片、点进详情却 404）。
     if getattr(get_storage(), "provider", "") == "github":
         try:
-            st = get_storage()
-            pushed = st.commit(
-                f"content: {totals.get('versions', 0)} 版本 / "
-                f"{totals.get('audios', 0)} 音频（{job.finished_at:%Y-%m-%d %H:%M}）"
+            from .publish import publish_all
+
+            pub = publish_all(
+                db=SessionLocal(),
+                storage=get_storage(),
+                topics_days=3,
+                commit_msg=(
+                    f"content: {totals.get('versions', 0)} 版本 / "
+                    f"{totals.get('audios', 0)} 音频"
+                    f"（{job.finished_at:%Y-%m-%d %H:%M}）"
+                ),
             )
-            totals["git_pushed"] = bool(pushed)
-            keep = getattr(settings, "github_keep_days", 14)
-            r = st.prune(keep)
-            totals["git_pruned"] = r["deleted"]
-            log.info("[pipe] 已提交 GitHub：pushed=%s pruned=%s", pushed, r["deleted"])
+            totals["publish_ok"] = pub.get("ok")
+            totals["publish_verify"] = pub.get("verify")
+            totals["index_rev"] = pub.get("index_rev", "")
+            if not pub.get("ok"):
+                log.error("[pipe] 发布未完成：%s", pub.get("verify"))
+            else:
+                st = get_storage()
+                keep = getattr(settings, "github_keep_days", 14)
+                totals["git_pruned"] = st.prune(keep)["deleted"]
         except Exception as exc:  # noqa: BLE001
-            log.error("[pipe] GitHub 提交失败: %s", exc)
-            totals["git_error"] = str(exc)[:200]
+            log.error("[pipe] 发布失败: %s", exc)
+            totals["publish_error"] = str(exc)[:200]
 
     log.info("[pipe] 结束 %s", totals)
     return {

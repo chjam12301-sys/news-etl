@@ -61,6 +61,8 @@ class GitHubStorage:
         self.repo = repo            # owner/name
         self.branch = branch
         self.local_dir = Path(local_dir).resolve()
+        # 仓库根目录 —— 供发布校验用 git cat-file 查某个 commit 下文件是否存在
+        self.repo_dir = str(self.local_dir)
         self.token = token
         self.content_root = self.local_dir / CONTENT_DIR
 
@@ -123,14 +125,9 @@ class GitHubStorage:
             if p.returncode != 0:
                 raise RuntimeError(f"[gh] 推送失败: {p.stderr[:200]}")
 
-        # 推送后重写 latest.json —— 它必须指向**含本次内容**的 commit。
-        # 放在提交之后写，是因为 ref 只有提交后才确定；
-        # 若放提交之前，ref 会指向上一个 commit，App 按此拉取就拿不到新内容。
-        try:
-            self._refresh_latest_pointer(self.current_ref())
-        except Exception as exc:  # noqa: BLE001
-            log.warning("[gh] 更新 latest.json 失败: %s", exc)
-
+        # 这里**不**更新 latest.json。
+        # 索引里的链接必须在内容提交之后生成、再经校验，才可以更新指针，
+        # 顺序由 app/publish.publish_all 统一编排。
         log.info("[gh] 已推送 %s", message)
         return True
 
@@ -146,7 +143,7 @@ class GitHubStorage:
                 return True
         return False
 
-    def _refresh_latest_pointer(self, ref: str = "") -> None:
+    def refresh_latest_pointer(self, ref: str = "") -> None:
         """重写 content/latest.json（两个路径都写），使其指向含本次内容的 commit。
 
         `ref` 传本次内容提交后的 SHA。因为紧接着还要为 latest.json 本身

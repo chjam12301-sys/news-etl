@@ -1,22 +1,33 @@
-"""发布内容到CDN，并让 JSON 里的链接固定到具体 commit。
+"""重新发布索引：修正内部链接 → 全量校验 → 更新指针。
 
-架构
+为什么需要
+----------
+历史故障：导出时用`current_ref()` 取CDN 基址，而此刻新文件**尚未提交**，
+于是索引里的 `detail_url` / `audio.url` 指向了不包含这些文件的旧 commit。
+表现是**首页卡片正常**（标题、图片、译文都在索引里），**点进详情却 404**。
+
+关键：**只更新 latest.json 修不好** —— 失效地址写死在索引内容里，
+必须重新生成索引，让链接基于「确实包含这些文件」的 commit。
+
+正确顺序（app/publish.publish_all）
+------------------------------------
+    ① 提交详情与音频
+    ② 用该 commit 生成索引
+    ③ 校验索引引用的每一份详情与音频（含 version/article 身份与 hash）
+    ④ 全部通过后才更新 latest 指针
+
+用法
 ----
-jsDelivr 对分支名 `@main` 缓存较久（实测四个节点有三个返回旧版），
-但对 commit SHA 是精确的。于是：
-
-    data/latest.json   ← 唯一需要「绕过缓存」的小文件，只含 { "ref": "<sha>" }
-    data/index.json    ← 里面所有链接都带 @<sha>，可永久缓存
-
-App 只需：
-    1. 拉 latest.json?t=<ts>      （强制绕过缓存）
-    2. 拼 {cdn}/{ref}/content/...拉后续所有内容
-这样详情与音频永久缓存，只有几百字节的 latest.json 需要每次校验。
+    .venv/bin/python scripts/republish.py --dry   # 只校验现状，不改动
+    .venv/bin/python scripts/republish.py         # 重新发布
 """
 from __future__ import annotations
 
+import argparse
 import json
+import logging
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -36,65 +47,116 @@ os.environ.setdefault(
     "ep-quiet-art-b3edqp3u-pooler.c-4.ap-southeast-1.aws.neon.tech/neondb?sslmode=require",
 )
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-7s %(name)-12s | %(message)s",
+    datefmt="%H:%M:%S",
+    force=True,
+)
+
 from app.config import get_settings  # noqa: E402
 
 get_settings.cache_clear()
 
 from app.db import SessionLocal, init_db  # noqa: E402
-from app.exporter import export_all  # noqa: E402
+from app.publish import publish_all, verify_published  # noqa: E402
 from app.storage import get_storage  # noqa: E402
 
-ROOT = Path("content")
+INDEX_KEY = "data/index.json"
+
+
+def _read_index_at(repo_dir: str, rev: str) -> dict | None:
+    p = subprocess.run(
+        ["git", "cat-file", "-p", f"{rev}:content/{INDEX_KEY}"],
+        cwd=repo_dir, capture_output=True,
+    )
+    if p.returncode != 0:
+        return None
+    try:
+        return json.loads(p.stdout)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser(description="重新发布并校验索引")
+    ap.add_argument("--dry", action="store_true", help="只校验现状，不改动")
+    args = ap.parse_args()
+
     init_db()
     db = SessionLocal()
     st = get_storage()
 
-    # 1) 先导出（此时 HEAD =代码最后一次提交的 SHA）
-    head = st.current_ref()
-    export_all(db)
-    print(f"导出时 HEAD = {head}")
+    if getattr(st, "provider", "") != "github":
+        print("当前存储不是 github，跳过")
+        db.close()
+        return 0
 
-    # 2) 提交内容（会产生新 commit，但内容里链接指向 head —— head 一定包含全部内容）
-    st.commit(f"content: 更新（链接指向 {head}）")
-    after = st.current_ref()
-    print(f"提交后 HEAD = {after}")
+    rev = st.current_ref()
+    print(f"当前 commit: {rev[:7]}\n")
 
-    # 3) 写 latest.json（它的内容就是 after，供 App 拼 URL 用）
-    (ROOT / "latest.json").write_text(
-        json.dumps(
-            {
-                "ref": after,
-                "content_ref": head,
-                "updated_at": __import__("datetime").datetime.now(
-                    __import__("datetime").timezone.utc
-                ).isoformat(),
-                "hint": "App 先拉本文件（加 ?t= 时间戳），再用 ref 拼后续 URL",
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
+    # ── 先校验现状 ──────────────────────────────────────
+    index = _read_index_at(st.repo_dir, rev)
+    if index is None:
+        print("❌ 读不到索引文件")
+        db.close()
+        return 1
+
+    res = verify_published(repo_dir=st.repo_dir, rev=rev, index=index)
+    print(f"现状校验: {res.summary()}\n")
+
+    if args.dry:
+        db.close()
+        return 0 if res.ok else 1
+
+    # ── 四阶段重新发布 ──────────────────────────────────
+    if res.ok:
+        print("现状已健康，仍完整跑一遍发布流程以确保顺序正确。\n")
+    else:
+        print("现状有问题，按四阶段重新发布。\n")
+
+    out = publish_all(db=db, storage=st, topics_days=3,
+                      commit_msg="content: 重新发布（修正链接）")
+    print(f"\n发布结果 ok={out.get('ok')}")
+    print(f"  校验    : {out.get('verify')}")
+    print(f"  索引rev : {str(out.get('index_rev', ''))[:7]}")
+
+    if not out.get("ok"):
+        print("\n❌ 校验未通过 —— 已保留上一份可用索引，App 不受影响")
+        db.close()
+        return 1
+
+    # ── 发布后复核 ──────────────────────────────────────
+    final_rev = out["index_rev"]
+    new_index = _read_index_at(st.repo_dir, final_rev) or {}
+    recheck = verify_published(repo_dir=st.repo_dir, rev=final_rev, index=new_index)
+    print(f"\n发布后复核: {recheck.summary()}")
+
+    latest_path = Path("content/latest.json")
+    latest_ref = ""
+    if latest_path.is_file():
+        latest_ref = json.loads(
+            latest_path.read_text(encoding="utf-8")
+        ).get("ref", "")
+    print(f"  latest.ref = {latest_ref[:7]}")
+
+    ok = (
+        recheck.ok
+        and latest_ref.startswith(final_rev[:7])
     )
-    st.commit(f"content: latest.json → {after}")
+    print(f"\n{'✅ 发布成功，索引内每一条链接都已验证可访问' if ok else '❌ 仍有问题'}")
 
-    final = st.current_ref()
-    idx = json.loads((ROOT / "data" / "index.json").read_text(encoding="utf-8"))
-    item = idx["latest"]["versions"]["en"][0]
-    used = item["detail_url"].split("@")[1].split("/")[0]
-
-    print()
-    print(f"latest.json ref   = {final}")
-    print(f"JSON 内 detail_url= @{used}")
-    print(f"  detail_url: {item['detail_url']}")
-    print(f"  audio.url : {item['audio']['url']}")
-
-    # 校验：JSON 指向的 commit 必须包含全部 content
-    r = st._git("cat-file", "-e", f"{used}:content/data/versions/1.json", check=False)
-    ok = r.returncode == 0
-    print(f"\n{'✓' if ok else '✗'} 链接指向的 commit {used} 包含完整内容: {ok}")
+    if ok:
+        items = [
+            it
+            for lang in ("en", "ja")
+            for it in new_index.get("latest", {}).get("versions", {}).get(lang) or []
+        ]
+        print(f"   共校验 {len(items)} 条（详情 + 音频 + 身份 + hash）")
+        print(f"   索引地址: {latest_ref[:7]}")
+        sample = items[0] if items else None
+        if sample:
+            print(f"   示例 v{sample['version_id']}: {sample['detail_url']}")
 
     db.close()
     return 0 if ok else 1
