@@ -103,9 +103,22 @@ class GitHubStorage:
         self._git("commit", "-m", message, check=False)
         p = self._git("push", "origin", self.branch, check=False)
         if p.returncode != 0:
-            # 并发推送可能失败，重试一次
+            # 并发推送可能失败。rebase 冲突时 git 会把冲突标记写进工作区文件，
+            # 一旦提交上去，CDN 上的 JSON 就废了（曾导致 content/index.json
+            # 带<<<<<<< 而无法解析）。因此：先 stash 保护产物，
+            # rebase 失败就放弃本地提交、保住远端版本。
+            log.warning("[gh] 推送冲突，重试（rebase）")
             time.sleep(2)
-            self._git("pull", "--rebase", "--autostash", "origin", self.branch, check=False)
+            self._git("stash", "push", "--include-untracked",
+                      "--", CONTENT_DIR, check=False)
+            self._git("fetch", "origin", self.branch, check=False)
+            self._git("reset", "--hard", f"origin/{self.branch}", check=False)
+            self._git("stash", "pop", check=False)
+            # 复查产物是否被冲突标记污染
+            if self._content_has_conflict_markers():
+                log.error("[gh] 产物含冲突标记，放弃本次提交（保住远端旧版）")
+                self._git("checkout", "--", ".", check=False)
+                return False
             p = self._git("push", "origin", self.branch, check=False)
             if p.returncode != 0:
                 raise RuntimeError(f"[gh] 推送失败: {p.stderr[:200]}")
@@ -120,6 +133,18 @@ class GitHubStorage:
 
         log.info("[gh] 已推送 %s", message)
         return True
+
+    def _content_has_conflict_markers(self) -> bool:
+        """检查产物里是否混入了 git 冲突标记。"""
+        for p in self.content_root.rglob("*.json"):
+            try:
+                head = p.read_text(encoding="utf-8", errors="replace")[:200]
+            except OSError:
+                continue
+            if head.startswith("<<<<<<<") or "\n<<<<<<<" in head or head.startswith(">>>>>>>"):
+                log.error("[gh] 发现冲突标记: %s", p)
+                return True
+        return False
 
     def _refresh_latest_pointer(self, ref: str = "") -> None:
         """重写 content/latest.json（两个路径都写），使其指向含本次内容的 commit。
