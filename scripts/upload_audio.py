@@ -66,12 +66,22 @@ def main() -> int:
         print("  ...")
         return 0
 
+    import shutil
+
+    aws = shutil.which("aws")
+    print(f"aws cli：{aws or '未安装（TLS 兜底通道不可用）'}")
+    if aws:
+        print("  " + subprocess.run([aws, "--version"], capture_output=True,
+                                    text=True).stdout.strip().splitlines()[0])
+
     store = get_audio_storage()
     print(f"存储后端：{getattr(store, 'name', store)}")
 
     ok = fail = skipped = 0
     failures: list[str] = []
-    for f in files:
+    for i, f in enumerate(files, 1):
+        if i % 50 == 0:
+            print(f"  ...{i}/{len(files)}")
         key = f"audio/{f.relative_to(AUDIO_ROOT).as_posix()}"
         data = f.read_bytes()
         try:

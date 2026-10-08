@@ -116,6 +116,12 @@ class LocalStorage:
         ]
 
 
+def _is_tls_error(exc: BaseException) -> bool:
+    """判断是否 TLS/握手类故障 —— 重试无用，必须换通道。"""
+    s = str(exc)
+    return "SSL" in s or "handshake" in s.lower()
+
+
 def _put_via_awscli(key: str, path: str, content_type: str | None) -> bool:
     """用 aws cli 上传。GitHub Actions runner 的 Python TLS 栈与 R2
     握手失败（SSLV3_ALERT_HANDSHAKE_FAILURE），而 aws cli 用 OpenSSL，
@@ -185,6 +191,13 @@ class R2Storage:
         self.provider = provider
         self.name = provider
         self.public_base = public_base.rstrip("/")
+        self.endpoint = endpoint
+        self.access_key = access_key
+        self.secret_key = secret_key
+        # GitHub Actions runner 的 Python TLS 栈与 Cloudflare 握手失败
+        # （SSLV3_ALERT_HANDSHAKE_FAILURE）。一旦发生，后续全部改用 aws cli，
+        # 不再逐个试 boto3 —— 否则 310 个文件要浪费 30 分钟。
+        self._tls_broken = False
 
         # Backblaze B2 的 S3 兼容认证特殊：access key = "keyId:applicationKey"
         # 拼接而成，secret_access_key 任意非空字符串即可。
@@ -244,46 +257,142 @@ class R2Storage:
             extra["ContentType"] = content_type
 
         last: Exception | None = None
-        tls_failed = False
 
-        for attempt in range(3):
-            try:
-                self.client.put_object(Bucket=self.bucket, Key=key, Body=data, **extra)
-                return StoredObject(key=key, size=len(data), url=self.public_url(key))
-            except Exception as exc:  # noqa: BLE001
-                last = exc
-                if "SSL" in str(exc) or "handshake" in str(exc).lower():
-                    tls_failed = True
-                    break  # 重试无用，直接走备用通道
-                if "AccessDenied" in str(exc) or "InvalidAccessKeyId" in str(exc):
-                    raise
-                log.warning("[r2] put %s 失败(%s)，重试", key, exc)
-                time.sleep(2 * (attempt + 1))
-
-        # 降级：aws cli
-        if tls_failed:
-            import tempfile
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as f:
-                f.write(data)
-                tmp = f.name
-            try:
-                if _put_via_awscli(key, tmp, content_type):
-                    log.info("[r2] 经 aws cli 上传成功: %s", key)
+        # TLS 已确认不可用 → 直接走 aws cli，别再浪费时间试 boto3
+        if not self._tls_broken:
+            for attempt in range(3):
+                try:
+                    self.client.put_object(Bucket=self.bucket, Key=key, Body=data, **extra)
                     return StoredObject(key=key, size=len(data), url=self.public_url(key))
-            finally:
-                Path(tmp).unlink(missing_ok=True)
+                except Exception as exc:  # noqa: BLE001
+                    last = exc
+                    if _is_tls_error(exc):
+                        self._tls_broken = True
+                        log.warning(
+                            "[r2] TLS 握手失败，后续改用 aws cli 通道: %s",
+                            str(exc)[:120],
+                        )
+                        break
+                    if "AccessDenied" in str(exc) or "InvalidAccessKeyId" in str(exc):
+                        raise
+                    log.warning("[r2] put %s 失败(%s)，重试", key, exc)
+                    time.sleep(2 * (attempt + 1))
+
+        # 备用通道：aws cli（OpenSSL 实现，不受 runner Python TLS 栈影响）
+        if self._put_via_cli(key, data, content_type):
+            return StoredObject(key=key, size=len(data), url=self.public_url(key))
 
         raise RuntimeError(f"[r2] 上传 {key} 失败: {last}")
 
-    def exists(self, key: str) -> bool:
-        from botocore.exceptions import ClientError
+    # ---- aws cli 备用通道 -------------------------------------------- #
+    def _cli_env(self) -> dict:
+        import os
+
+        env = dict(os.environ)
+        env.update(
+            AWS_ACCESS_KEY_ID=self.access_key,
+            AWS_SECRET_ACCESS_KEY=self.secret_key,
+            AWS_DEFAULT_REGION="auto",
+        )
+        return env
+
+    def _put_via_cli(self, key: str, data: bytes, content_type: str | None) -> bool:
+        import subprocess
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
+            f.write(data)
+            tmp = f.name
+        cmd = [
+            "aws", "s3", "cp", tmp, f"s3://{self.bucket}/{key}",
+            "--endpoint-url", self.endpoint,
+            "--no-progress",
+            "--cache-control", "public, max-age=31536000, immutable",
+        ]
+        if content_type:
+            cmd += ["--content-type", content_type]
+        try:
+            r = subprocess.run(
+                cmd, env=self._cli_env(), capture_output=True, timeout=180
+            )
+            if r.returncode == 0:
+                return True
+            log.warning("[r2] aws cli 上传失败: %s", r.stderr.decode(errors="replace")[:300])
+        except FileNotFoundError:
+            log.error("[r2] 未安装 aws cli —— 无法走备用通道")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[r2] aws cli 调用异常: %s", exc)
+        finally:
+            Path(tmp).unlink(missing_ok=True)
+        return False
+
+    def _exists_via_cli(self, key: str) -> bool | None:
+        """aws cli 探测；无法判断时返回 None。"""
+        import subprocess
+
+        cmd = [
+            "aws", "s3api", "head-object",
+            "--bucket", self.bucket, "--key", key,
+            "--endpoint-url", self.endpoint,
+        ]
+        try:
+            r = subprocess.run(
+                cmd, env=self._cli_env(), capture_output=True, timeout=60
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        if r.returncode == 0:
+            return True
+        if b"404" in r.stderr or b"Not Found" in r.stderr:
+            return False
+        return None
+
+    def _exists_via_http(self, key: str) -> bool | None:
+        """公开域名探测（只有配了 public_base 才行）。"""
+        if not self.public_base:
+            return None
+        import urllib.error
+        import urllib.request
 
         try:
-            self.client.head_object(Bucket=self.bucket, Key=key)
-            return True
-        except ClientError:
-            return False
+            req = urllib.request.Request(
+                f"{self.public_base}/{key}", method="HEAD",
+                headers={"User-Agent": "news-etl/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=20) as r:  # noqa: S310
+                return 200 <= r.status < 400
+        except urllib.error.HTTPError as exc:
+            return False if exc.code in (404, 403) else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def exists(self, key: str) -> bool:
+        """探测对象是否存在。
+
+        boto3 只把 ClientError 当「不存在」，但 SSL/连接类错误是
+        BotoCoreError，会直接抛出去 —— 曾导致迁移脚本在探测阶段全灭。
+        因此这里逐级兜底：boto3 → aws cli → 公开 URL。
+        """
+        if not self._tls_broken:
+            from botocore.exceptions import ClientError
+
+            try:
+                self.client.head_object(Bucket=self.bucket, Key=key)
+                return True
+            except ClientError:
+                return False
+            except Exception as exc:  # noqa: BLE001
+                if _is_tls_error(exc):
+                    self._tls_broken = True
+                    log.warning("[r2] 探测也遇 TLS 失败，改用备用通道")
+                else:
+                    log.warning("[r2] head %s 异常: %s", key, exc)
+
+        for probe in (self._exists_via_cli, self._exists_via_http):
+            got = probe(key)
+            if got is not None:
+                return got
+        return False
 
     def read(self, key: str) -> bytes | None:
         from botocore.exceptions import ClientError
