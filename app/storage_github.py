@@ -109,8 +109,74 @@ class GitHubStorage:
             p = self._git("push", "origin", self.branch, check=False)
             if p.returncode != 0:
                 raise RuntimeError(f"[gh] 推送失败: {p.stderr[:200]}")
+
+        # 推送后重写 latest.json —— 它必须指向**含本次内容**的 commit。
+        # 放在提交之后写，是因为 ref 只有提交后才确定；
+        # 若放提交之前，ref 会指向上一个 commit，App 按此拉取就拿不到新内容。
+        try:
+            self._refresh_latest_pointer(self.current_ref())
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[gh] 更新 latest.json 失败: %s", exc)
+
         log.info("[gh] 已推送 %s", message)
         return True
+
+    def _refresh_latest_pointer(self, ref: str = "") -> None:
+        """重写 content/latest.json（两个路径都写），使其指向含本次内容的 commit。
+
+        `ref` 传本次内容提交后的 SHA。因为紧接着还要为 latest.json 本身
+        提交一次，若改用那之后的 HEAD 就会自我指向、永远错位一个 commit。
+        """
+        import datetime as _dt
+        import json as _json
+
+        ref = ref or self.current_ref()
+        if not ref:
+            return
+
+        # 自检：ref 必须真的含有最新的 index.json，否则 App 按此拉取会拿到旧内容。
+        # （若因提交顺序错位而指错，这里能立刻发现并纠正。）
+        from .storage import index_key
+
+        probe = self._git("show", f"{ref}:{index_key()}", check=False)
+        if probe.returncode != 0:
+            alt = self._git("rev-parse", "HEAD", check=False).stdout.strip()
+            log.warning("[gh] latest.json 的 ref=%s 不含索引，改用 HEAD=%s",
+                        ref, alt[:7])
+            ref = alt or ref
+
+        cdn = self.cdn_base.replace("@main", f"@{ref}")
+        # main_url 用 @main 而非固定 ref —— 因为本文件要靠它自己刷新：
+        # 若自身也钉在某个 ref 上，jsDelivr 缓存会让它永远停在旧值，
+        # App 就再也拿不到新的 index_url。
+        payload = {
+            "ref": ref,
+            "updated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "index_url": f"{cdn}/{CONTENT_DIR}/index.json",
+            "main_index_url": (
+                f"{self.cdn_base}/{CONTENT_DIR}/index.json"
+            ),
+            "hint": (
+                "取 index_url（固定 ref，无缓存问题）；"
+                "若想每次都拿最新，可读 main_index_url 但需自行校验 "
+                "其 version.published_at 是否够新"
+            ),
+        }
+        raw = _json.dumps(payload, ensure_ascii=False, indent=1).encode("utf-8")
+        for p in (
+            self.content_root / "latest.json",
+            self.content_root / "data" / "latest.json",
+        ):
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(raw)
+
+        # 这次写本身也是一次提交，推上去才算生效
+        self._git("add", "-f", CONTENT_DIR, check=False)
+        r = self._git("status", "--porcelain", "--", CONTENT_DIR, check=False)
+        if r.stdout.strip():
+            self._git("commit", "-m", f"chore: latest.json → {ref}", check=False)
+            self._git("push", "origin", self.branch, check=False)
+        log.info("[gh] latest.json 已指向 @%s", ref)
 
     # ---- Storage 协议 --------------------------------------------------- #
     def put(self, key: str, data: bytes, *, content_type: str | None = None) -> StoredObject:
