@@ -174,6 +174,13 @@ class R2Storage:
 
     name = "r2"  # 实例化后按 provider 覆盖为 "r2" 或 "b2"
 
+    # 类级默认值：测试里有用 __new__ 直接造实例绕过 __init__ 的，
+    # 缺这些属性会让 put/exists 直接炸。
+    _tls_broken: bool = False
+    endpoint: str = ""
+    access_key: str = ""
+    secret_key: str = ""
+
     def __init__(
         self,
         bucket: str,
