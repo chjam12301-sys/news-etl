@@ -108,6 +108,8 @@ def _version_summary(v: ArticleVersion, a: Article, base: str, rev: str = "") ->
         "level_label": v.level_label,
         "title": v.title,
         "title_zh": v.title_zh or "",
+        # App 用它判断能否显示译文，避免"无译文却看不出原因"
+        "has_translation": bool(v.title_zh and v.paragraphs_zh),
         "topic": a.topic,
         "source": a.source,
         "source_url": a.source_url,
@@ -137,6 +139,10 @@ def _version_detail(v: ArticleVersion, a: Article, base: str, rev: str = "") -> 
         {
             "paragraphs": v.paragraphs or [],
             "paragraphs_zh": v.paragraphs_zh or [],
+            "has_translation": bool(
+                v.title_zh and v.paragraphs_zh
+                and len(v.paragraphs_zh) == len(v.paragraphs or [])
+            ),
             "body": v.body,
             "body_zh": "\n\n".join(v.paragraphs_zh) if v.paragraphs_zh else "",
             # 时间轴 cs/ce 的坐标系：段落换行被压成空格后的单行文本。
