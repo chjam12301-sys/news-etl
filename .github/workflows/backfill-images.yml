@@ -1,0 +1,85 @@
+name: 补刷历史配图
+
+# 为什么需要
+# 抓取阶段会把新闻原图写进 image_url（那是抓取阶段的字段，非 CC0）。
+# 现在规则是「只有 provider 在合规图源白名单里才输出实图」，所以配图改造前入库的
+# 老文章会全部显示渐变占位块。这个 workflow 把它们的配图刷成 Unsplash 图。
+#
+# 零 DeepSeek 消耗：只改 image_* 六个字段，不动改写版本、不重新合成音频。
+# 跑完自动重新发布（详情 JSON + 索引），App 刷新即可看到。
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '连已是 Unsplash 的也重抓'
+        required: false
+        default: 'false'
+      dry_run:
+        description: '只刷库并打印，不重新发布'
+        required: false
+        default: 'false'
+
+# 与每日流水线共用并发组，避免同时写 content/
+concurrency:
+  group: daily-news
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 补刷配图
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          IMAGE_PROVIDERS: unsplash,pexels,wikimedia,openverse
+          UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
+          UNSPLASH_APP_NAME: daily-english-news
+          IMAGE_VERIFY_URL: "true"
+        run: |
+          ARGS=""
+          if [ "${{ inputs.force }}" = "true" ]; then ARGS="$ARGS --force"; fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          python scripts/backfill_images.py $ARGS
+
+      - name: 重新发布（刷过才发）
+        if: ${{ inputs.dry_run != 'true' }}
+        env:
+          STORAGE_BACKEND: github
+          GITHUB_CONTENT_REPO: ${{ github.repository }}
+          GITHUB_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_KEEP_DAYS: "14"
+          PUBLIC_BASE_URL: https://cdn.jsdelivr.net/gh/${{ github.repository }}@main/content
+
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/republish.py
+
+      - name: 抽查产出里的署名
+        if: ${{ inputs.dry_run != 'true' }}
+        run: |
+          echo "--- 署名样本 ---"
+          grep -rho '"credit": "[^"]*"' content/data/versions/*.json 2>/dev/null | sort -u | head -5
+          echo "--- 图源分布 ---"
+          grep -rho '"provider": "[^"]*"' content/data/versions/*.json 2>/dev/null | sort | uniq -c

@@ -87,11 +87,10 @@ def _image_meta(a: Article) -> dict[str, Any]:
     url = (a.image_url or "").strip()
     prov = (a.image_provider or "").strip().lower()
 
-    # 图源已知但不在白名单（例如被改成媒体原图）→ 一律降级占位
-    if prov and prov not in _SAFE_IMAGE_PROVIDERS:
-        return ph
-    # 老数据没有 provider：沿用域名黑名单粗筛
-    if url and (prov or _is_cc0_safe(url)):
+    # 白名单判定：**只有 provider 明确是合规图源才输出实图**。
+    # provider 为空 = 抓取阶段写进来的新闻原图（各家 CDN 域名不一，黑名单兜不住），
+    # 一律降级为渐变块，等 pipeline 重抓成合规图。
+    if url and prov in _SAFE_IMAGE_PROVIDERS:
         return {
             "type": "photo",
             "url": url,
@@ -100,25 +99,11 @@ def _image_meta(a: Article) -> dict[str, Any]:
             "credit": a.image_credit or "",           # 全文，兜底用
             "author": a.image_author or "",            # 作者名
             "credit_url": a.image_credit_url or "",   # 摄影师主页
-            "source": _PROVIDER_LABEL.get(prov, prov.title()),   # 显示名，如 Unsplash
+            "source": _PROVIDER_LABEL.get(prov, prov),              # 显示名，如 Unsplash
             "source_url": a.image_source_url or "",   # 图片详情页
             "fallback": {"type": "gradient", **{k: v for k, v in ph.items() if k != "type"}},
         }
     return ph
-
-
-# 已知媒体图床域名（含即视为非 CC0）
-_MEDIA_HOSTS = (
-    "arstechnica", "bbc.", "nytimes", "theguardian", "cnn.", "reuters",
-    "washingtonpost", "bloomberg", "ft.com", "economist", "wsj",
-    "npr.org", "aljazeera", "cnbc", "forbes", "wired", "theverge",
-)
-
-
-def _is_cc0_safe(url: str) -> bool:
-    """粗筛：媒体图床域名一律视为非 CC0。图库域名不在此列表内。"""
-    low = url.lower()
-    return not any(h in low for h in _MEDIA_HOSTS)
 
 
 # 允许对外输出的图源（与 images.PROVIDER_NAMES 对齐）

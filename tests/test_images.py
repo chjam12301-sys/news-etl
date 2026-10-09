@@ -205,6 +205,25 @@ def test_rest_schema_exposes_structured_image():
     assert out.image_url == art.image_url
 
 
+def test_exporter_rejects_news_image_without_provider():
+    """provider 为空 = 抓取阶段写进来的新闻原图，不能当成合规图输出。
+
+    媒体 CDN 域名千变万化（scx1.b-cdn.net / cdn.arstechnica.net / …），
+    域名黑名单兜不住，只能靠 provider 白名单 —— 这是防回归用例。
+    """
+    art = SimpleNamespace(
+        topic="health",
+        title_original="Flowers on a grave",
+        image_url="https://scx1.b-cdn.net/csz/news/tmb/2026/flower-on-a-grave.jpg",
+        image_credit="",
+        image_provider="",
+        image_credit_url="",
+        image_source_url="",
+        image_author="",
+    )
+    assert _image_meta(art)["type"] == "gradient"
+
+
 def test_exporter_gradient_when_no_image():
     art = SimpleNamespace(
         topic="world",
