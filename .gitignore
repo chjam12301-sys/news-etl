@@ -12,3 +12,6 @@ content/
 data/
 app/data/
 !data/.gitkeep.env
+
+# 音频不入库：jsDelivr 单仓库 50MB 上限，音频由对象存储提供
+content/audio/
