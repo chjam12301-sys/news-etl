@@ -8,6 +8,7 @@
 
 | 版本 | 日期 | 状态 | 摘要 |
 |---|---|---|---|
+| **v2.6** | 2026-10-09 | ✅ 可用 | 🔴 **音频地址换域名**：由 `cdn.jsdelivr.net` 改为 `pub-*.r2.dev`（对象存储） |
 | **v2.5** | 2026-10-08 | ✅ 可用 | 新增 `has_translation`，明确告知译文是否可用 |
 | **v2.4** | 2026-10-07 | ✅ 可用 | 🔴 **修正 v2.3**：`content_hash` 补入 `cs`/`ce`/`si` 字段 |
 | **v2.3** | 2026-10-07 | ⚠️ 已被 v2.4 修正 | 列表项新增 `content_hash`，App 据此判断是否重新下载 |
@@ -15,6 +16,49 @@
 | **v2.1** | 2026-10-07 | ✅ 可用 | CDN 链接从写死 SHA 改为运行时查询（修「详情无时间轴」） |
 
 > 字段只增不改，**v2.0 的客户端代码无需修改即可跑在 v2.2 上**。
+
+---
+
+## 📌 v2.6 · 音频地址换域名（🔴 必读）
+
+**`audio.url` 的域名变了，请改白名单：**
+
+| | 旧 | 新 |
+|---|---|---|
+| 域名 | `cdn.jsdelivr.net` | `pub-aba43a6fb1db4dc08fede1dbc81f3241.r2.dev` |
+| 形态 | `…/content/audio/<article_id>/<level>.mp3` | `…/audio/<article_id>/<level>.mp3` |
+
+**其余字段一律没变** —— `duration` / `size_bytes` / `voice` / `word_count` /
+`has_timeline` 的含义和取值口径全部照旧，只是 `url` 换了 host。
+
+**为什么要换**
+
+音频占 214MB，JSON 只有 17MB。jsDelivr 对单个 GitHub 仓库有 **50MB 硬上限**，
+超限后**任何此前没取过的新路径都会返回 403**
+（`Package size exceeded the configured limit of 50 MB`）——
+表现是「老文章能看，新文章一进去就 404」。所以音频必须搬出 Git，
+改由对象存储（Cloudflare R2）提供，仓库只留 JSON。
+
+**为什么 URL 不带 commit SHA、也不会变**
+
+```
+旧: https://cdn.jsdelivr.net/gh/<repo>@<40位commit>/content/audio/31/en_a1.mp3
+新: https://pub-xxx.r2.dev/audio/31/en_a1.mp3
+```
+
+对象存储的地址是**永久稳定**的，跟仓库 commit 无关。因此：
+
+- **不要**把 `audio.url` 里的 commit 当版本号 —— 里面没有了
+- 内容更新仍然只看 `content_hash`：音频重新生成 → `size_bytes` / `duration` /
+  `timeline` 变 → `content_hash` 变 → App 重新下载
+- 也就是说，**你原有的 `content_hash` 判断逻辑完全不用改**
+
+**App 侧要做的**
+
+1. 音频域名白名单加上 `*.r2.dev`（或直接不做域名限制）
+2. 如果你按 URL 字符串做了本地缓存 key，改成按 `content_hash` 或
+   `article_id + level_code` 做 key —— 否则同一份音频会因为 URL 变了而重复下载
+3. 直接读 JSON 里的 `audio.url` 即可，不要自己拼地址
 
 ---
 
@@ -428,7 +472,7 @@ const item = day.versions.ja.ja_n3.find(x => x.article_id === currentId);
   "has_audio": true,
   "audio": {
     "id": 1,
-    "url": "https://cdn.jsdelivr.net/.../content/audio/1/en_a1.mp3",
+    "url": "https://pub-aba43a6fb1db4dc08fede1dbc81f3241.r2.dev/audio/1/en_a1.mp3",
     "duration": 73.587,
     "size_bytes": 445248,
     "engine": "edge-tts",
@@ -700,7 +744,7 @@ App 启动
   "has_audio": true,
   "audio": {
     "id": 63,
-    "url": "https://cdn.jsdelivr.net/gh/chjam12301-sys/news-etl@e302484/content/audio/8/en_a1.mp3",
+    "url": "https://pub-aba43a6fb1db4dc08fede1dbc81f3241.r2.dev/audio/8/en_a1.mp3",
     "duration": 54.925,
     "size_bytes": 333216,
     "engine": "edge-tts",
