@@ -78,11 +78,16 @@ jobs:
         # 结果是库里已是 Unsplash 图、content/ 里还是旧格式（有图无署名）。
         run: python scripts/republish.py --days 30
 
-      - name: 抽查产出里的署名
+      - name: 抽查产出里的署名 + 对账数据库
         if: ${{ inputs.dry_run != 'true' }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           python - <<'PY'
-          import json, glob, collections
+          import json, glob, os, collections, re
+          from sqlalchemy import select, func
+          from app.db import engine, Article, ArticleVersion
+
           c = collections.Counter(); bad = 0
           for f in glob.glob("content/data/versions/*.json"):
               im = (json.load(open(f, encoding="utf-8")).get("image") or {})
@@ -93,5 +98,23 @@ jobs:
                   bad += 1
           for k, v in sorted(c.items(), key=lambda x: -x[1]):
               print(f"{v:>4}  {k[0]:<9} {k[1]}")
-          print(f"有图但署名不完整: {bad}  （应为 0）")
+          print(f"有图但署名不完整: {bad}  （应为 0）\n")
+
+          with engine.connect() as conn:
+              db_ids = {r for (r,) in conn.execute(select(ArticleVersion.id)).all()}
+              print("库内 articles  :", conn.execute(select(func.count()).select_from(Article)).scalar())
+              print("库内 versions  :", len(db_ids))
+              for d, n in conn.execute(
+                  select(Article.published_date, func.count())
+                  .group_by(Article.published_date).order_by(Article.published_date.desc())
+              ).all():
+                  print(f"  {d}  {n} 篇")
+
+          on_disk = {int(re.search(r"(\d+)\.json$", f).group(1))
+                     for f in glob.glob("content/data/versions/*.json")}
+          orphan = on_disk - db_ids
+          print(f"\n磁盘 {len(on_disk)} 份 / 库内 {len(db_ids)} 份")
+          print(f"孤儿（磁盘有、库里没有，可安全删）: {len(orphan)}")
+          if orphan:
+              print("  例:", sorted(orphan)[:10])
           PY
