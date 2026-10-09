@@ -93,7 +93,10 @@ def main() -> int:
 
     print("\n" + "-" * 62)
     print(f"  LLM      : {s.llm_provider} / {s.deepseek_model if s.deepseek_api_key else '离线降级'}")
-    print(f"  配图      : Openverse CC0（{'开' if s.image_fetch_enabled else '关'}）")
+    img_src = "UNSPLASH" if s.unsplash_access_key else (
+        "PEXELS" if s.pexels_api_key else "免费源(wikimedia/openverse)")
+    print(f"  配图      : {img_src}（{'开' if s.image_fetch_enabled else '关'}，"
+          f"链: {s.image_providers}）")
     print(f"  TTS      : {'开' if not args.no_tts else '关'}")
     print(f"  存储      : {st.name}")
     print(f"  CDN       : {s.r2_public_base}")

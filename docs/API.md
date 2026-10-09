@@ -8,6 +8,7 @@
 
 | 版本 | 日期 | 状态 | 摘要 |
 |---|---|---|---|
+| **v2.7** | 2026-10-09 | ✅ 可用 | 配图改为多级图源（优先 Unsplash）；`image` 增 `provider` / `credit_url` / `fallback` |
 | **v2.6** | 2026-10-09 | ✅ 可用 | 🔴 **音频地址换域名**：由 `cdn.jsdelivr.net` 改为 `pub-aba43a6fb1db4dc08fede1dbc81f3241.r2.dev`（对象存储） |
 | **v2.5** | 2026-10-08 | ✅ 可用 | 新增 `has_translation`，明确告知译文是否可用 |
 | **v2.4** | 2026-10-07 | ✅ 可用 | 🔴 **修正 v2.3**：`content_hash` 补入 `cs`/`ce`/`si` 字段 |
@@ -474,7 +475,14 @@ const item = day.versions.ja.ja_n3.find(x => x.article_id === currentId);
   "source": "arstechnica",
   "source_url": "https://arstechnica.com/security/...",
 
-  "image": { "type": "photo", "url": "https://cdn.arstechnica.net/...", "credit": "" },
+  "image": {
+    "type": "photo",
+    "url": "https://images.unsplash.com/photo-1?ixid=XYZ&w=1600&q=75&fm=jpg&fit=max",
+    "provider": "unsplash",
+    "credit": "Photo by Annie Spratt on Unsplash",
+    "credit_url": "https://unsplash.com/@anniespratt?utm_source=daily-english-news&utm_medium=referral",
+    "fallback": { "type": "gradient", "from": "hsl(285, 42%, 62%)", "to": "hsl(323, 46%, 48%)", "label": "TECH" }
+  },
 
   "published_date": "2026-10-06",
   "word_count": 168,
@@ -514,19 +522,35 @@ const item = day.versions.ja.ja_n3.find(x => x.article_id === currentId);
 
 `image.type` 有两种取值，**App 必须分支处理**：
 
-### `type: "photo"` —— 真实 CC0 图片
+### `type: "photo"` —— 真实图片
 
 ```json
 {
   "type": "photo",
-  "url": "https://live.staticflickr.com/3913/14334624106_a9bcc306a9_b.jpg",
-  "credit": "Bernard Spragg · cc0 1.0 · via flickr"
+  "url": "https://images.unsplash.com/photo-1?ixid=XYZ&w=1600&q=75&fm=jpg&fit=max",
+  "provider": "unsplash",
+  "credit": "Photo by Annie Spratt on Unsplash",
+  "credit_url": "https://unsplash.com/@anniespratt?utm_source=daily-english-news&utm_medium=referral",
+  "fallback": {
+    "type": "gradient",
+    "from": "hsl(285, 42%, 62%)",
+    "to": "hsl(323, 46%, 48%)",
+    "label": "TECH",
+    "seed": "96a25f2962ae"
+  }
 }
 ```
 
-- 图片均为 **CC0 / Public Domain**，可商用，无需授权
-- `credit` 建议显示在图片下方（小字）
-- 加载失败时建议降级到 `gradient` 表现
+| 字段 | 说明 |
+|---|---|
+| `provider` | `unsplash` / `pexels` / `wikimedia` / `openverse` |
+| `credit` | 一行署名文本，**必须显示在图片上或紧邻图片** |
+| `credit_url` | 摄影师主页（已带 utm），**必须可点击** |
+| `fallback` | 渐变兜底块，`onError` 时直接画它，永不空白 |
+
+> ⚠️ **署名是 API 合规要求，不是可选项**（Unsplash License 不强制，但
+> Unsplash **API Guidelines 强制**：必须署名摄影师 + Unsplash 并回链主页）。
+> 图片走 **hotlink**，不要下载转存到自己的 CDN —— 这也是 Unsplash 的硬性规则。
 
 ### `type: "gradient"` —— 渐变色块
 
@@ -542,24 +566,83 @@ const item = day.versions.ja.ja_n3.find(x => x.article_id === currentId);
 
 配色由 `topic + title` 哈希生成，**同一篇永远同色**，视觉稳定。
 
+### App 端必做的三件事
+
+| # | 必做 | 不做会怎样 |
+|---|---|---|
+| 1 | **署名必须可见且可点**：`credit` 显示在图上或紧邻图片，`credit_url` 用系统浏览器打开 | 违反 Unsplash API Guidelines，会被吊销 key |
+| 2 | **不要下载转存**：图片只按 `url` 直接加载，**不要**缓存到自己的 CDN/OSS 再复用 | Unsplash 硬性要求 hotlink（转存即违规） |
+| 3 | **`onError` 切 `fallback`**：加载失败立刻画渐变块 | Unsplash CDN 在部分网络下取不到，会白屏 |
+
+> 内存缓存（本次会话内复用解码后的位图）是允许的，**持久化到磁盘/自建 CDN 不允许**。
+
+### React Native
+
 ```jsx
 function Cover({ image }) {
-  if (image.type === 'photo') {
+  const [failed, setFailed] = useState(false);
+  const showPhoto = image.type === 'photo' && !failed;
+
+  if (!showPhoto) {
+    // photo 取不到 / 本身就是 gradient → 都走渐变块
+    const g = image.type === 'photo' ? image.fallback : image;
     return (
-      <View>
-        <Image source={{ uri: image.url }} style={cover} />
-        <Text style={credit}>{image.credit}</Text>
-      </View>
+      <LinearGradient colors={[g.from, g.to]} style={cover}>
+        <Text style={label}>{g.label}</Text>
+      </LinearGradient>
     );
   }
-  // gradient：CSS 渐变或用 LinearGradient
   return (
-    <View style={{ background: `linear-gradient(135deg, ${image.from}, ${image.to})` }}>
-      <Text style={label}>{image.label}</Text>
+    <View>
+      <Image source={{ uri: image.url }} style={cover} onError={() => setFailed(true)} />
+      {/* 署名：必须可见、可点 */}
+      <Text style={credit} onPress={() => Linking.openURL(image.credit_url)}>
+        {image.credit}
+      </Text>
     </View>
   );
 }
 ```
+
+### SwiftUI
+
+```swift
+struct CoverView: View {
+    let image: CoverImage          // 按上面 JSON 解码
+    @State private var failed = false
+
+    var body: some View {
+        if image.type == "photo", !failed {
+            ZStack(alignment: .bottomTrailing) {
+                AsyncImage(url: URL(string: image.url)) { phase in
+                    if case .failure = phase {
+                        Color.clear.onAppear { failed = true }   // 失败切兜底
+                    } else if let img = phase.image {
+                        img.resizable().scaledToFill()
+                    }
+                }
+                if let credit = image.credit, let url = image.creditURL {
+                    Link(credit, destination: url)               // 署名：可见 + 可点
+                        .font(.caption2).foregroundStyle(.white)
+                        .padding(6).background(.black.opacity(0.35))
+                }
+            }
+        } else {
+            let g = image.fallback ?? image
+            LinearGradient(colors: [Color(hsl: g.from), Color(hsl: g.to)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+                .overlay(Text(g.label).font(.caption))
+        }
+    }
+}
+```
+
+### 验收清单
+
+- [ ] 每张图上都能看到 `credit` 文字，点击能跳到摄影师主页
+- [ ] 断网 / 代理到不可达网络时，封面自动变渐变块，不白屏
+- [ ] 没有把 `image.url` 下载后上传到自己的对象存储
+- [ ] 列表页与详情页用的是**同一个** `image` 对象（署名不会在一处丢失）
 
 > 原生端可用 `expo-linear-gradient` / iOS `CAGradientLayer` 实现同样的渐变。
 
@@ -744,8 +827,11 @@ App 启动
   "source_url": "https://arstechnica.com/tech-policy/2026/10/big-oil-asks-supreme-court-to-kill-climate-lawsuits-before-trial/",
   "image": {
     "type": "photo",
-    "url": "https://live.staticflickr.com/3913/14334624106_a9bcc306a9_b.jpg",
-    "credit": "Bernard Spragg · cc0 1.0 · via flickr"
+    "url": "https://images.unsplash.com/photo-1?ixid=XYZ&w=1600&q=75&fm=jpg&fit=max",
+    "provider": "unsplash",
+    "credit": "Photo by Annie Spratt on Unsplash",
+    "credit_url": "https://unsplash.com/@anniespratt?utm_source=daily-english-news&utm_medium=referral",
+    "fallback": { "type": "gradient", "from": "hsl(285, 42%, 62%)", "to": "hsl(323, 46%, 48%)", "label": "TECH" }
   },
   "published_date": "2026-10-06",
   "word_count": 129,

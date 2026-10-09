@@ -111,27 +111,34 @@ async def _process_article(
             log.info("[pipe] article_id=%s 保留 %d 个已有完整译文的版本，只补其余",
                      article.id, len(keep))
 
-    # 配图：只用 Openverse CC0（方案 B）。
+    # 配图：多级图源降级（unsplash → pexels → wikimedia → openverse）。
     # 不使用新闻原图 —— 非 CC0 有版权风险，且热链对方 CDN 易失效。
-    if force or article.image_url is None:
+    # 「没有图」才抓，避免重跑时把已有好图清空。
+    if force or not (article.image_url or "").strip():
         from .images import find_image
+
+        def _clear_image() -> None:
+            article.image_url = ""
+            article.image_credit = ""
+            article.image_provider = ""
+            article.image_credit_url = ""
 
         try:
             img = await find_image(article.topic, article.title_original)
             if img:
                 article.image_url = img.url
                 article.image_credit = img.attribution
-                log.info("[img] article_id=%s → CC0 %s", article.id, img.url[:70])
+                article.image_provider = img.provider
+                article.image_credit_url = img.creator_url
+                log.info("[img] article_id=%s → %s %s", article.id, img.provider, img.url[:70])
             else:
-                # 显式清空原图（避免沿用旧的媒体图），由 _image_meta 走渐变占位
-                article.image_url = ""
-                article.image_credit = ""
-                log.info("[img] article_id=%s 未找到 CC0 图，用渐变占位块", article.id)
+                # 由 _image_meta 走渐变占位
+                _clear_image()
+                log.info("[img] article_id=%s 全部图源未命中，用渐变占位块", article.id)
         except Exception as exc:  # noqa: BLE001
             log.warning("[img] 配图失败: %s", exc)
             if not getattr(settings, "image_allow_source_fallback", False):
-                article.image_url = ""
-                article.image_credit = ""
+                _clear_image()
         db.flush()
 
     llm = get_llm()

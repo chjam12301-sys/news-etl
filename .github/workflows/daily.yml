@@ -119,9 +119,14 @@ jobs:
           TTS_VOICE_EN: en-US-AriaNeural
           TTS_VOICE_JA: ja-JP-NanamiNeural
 
-          # 配图（方案 B：Openverse CC0，禁止媒体原图兜底）
+          # 配图：多级降级 unsplash → pexels → wikimedia → openverse
+          # 缺 key 的源会自动跳过，不会中断流水线
           IMAGE_FETCH_ENABLED: "true"
+          IMAGE_PROVIDERS: unsplash,pexels,wikimedia,openverse
           IMAGE_ALLOW_SOURCE_FALLBACK: "false"
+          UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
+          UNSPLASH_APP_NAME: daily-english-news
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
 
           # 导出
           EXPORT_JSON: "true"

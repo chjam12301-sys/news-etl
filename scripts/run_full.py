@@ -52,7 +52,10 @@ async def main() -> int:
     print("\n" + "=" * 62)
     print(f" 存储      : {st.name}")
     print(f" LLM       : {s.llm_provider} ({'有 key' if s.deepseek_api_key else '离线降级'})")
-    print(f" 配图       : Openverse CC0（{ '开' if s.image_fetch_enabled else '关'}，"
+    img_src = "UNSPLASH" if s.unsplash_access_key else (
+        "PEXELS" if s.pexels_api_key else "免费源(wikimedia/openverse)")
+    print(f" 配图       : {img_src}（{'开' if s.image_fetch_enabled else '关'}，"
+          f"链: {s.image_providers}，"
           f"允许媒体原图兜底: {'是' if getattr(s, 'image_allow_source_fallback', False) else '否'}）")
     print(f" TTS       : {'开' if not args.no_tts else '关'}")
     print("=" * 62 + "\n")

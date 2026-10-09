@@ -59,7 +59,9 @@ class ArticleSummaryOut(BaseModel):
     topic: str
     source: str
     source_url: str
-    image_url: str | None = None
+    image_url: str | None = None      # 兼容旧客户端（v2.2 裸字符串）
+    # v2.7：结构化配图（photo/gradient + 署名 + 渐变兜底），与静态 JSON 完全一致
+    image: dict[str, Any] = Field(default_factory=dict)
 
     published_date: dt.date
     published_at: dt.datetime | None = None
@@ -74,6 +76,8 @@ class ArticleSummaryOut(BaseModel):
 
     @classmethod
     def from_row(cls, v, a, include_body: bool = False) -> "ArticleSummaryOut":
+        from .exporter import _image_meta   # 与静态 JSON 共用同一套配图逻辑
+
         audio = None
         if v.audio is not None:
             audio = AudioOut(
@@ -98,6 +102,7 @@ class ArticleSummaryOut(BaseModel):
             source=a.source,
             source_url=a.source_url,
             image_url=a.image_url,
+            image=_image_meta(a),
             published_date=a.published_date,
             published_at=a.published_at,
             word_count=v.word_count,

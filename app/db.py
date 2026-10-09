@@ -61,6 +61,8 @@ def init_db() -> None:
             "summary_original": "TEXT",
             "image_url": "TEXT",
             "image_credit": "TEXT",
+            "image_provider": "VARCHAR(24)",
+            "image_credit_url": "TEXT",
             "rewrite_status": "VARCHAR(24)",
             "tts_status": "VARCHAR(24)",
             "error": "TEXT",
@@ -116,8 +118,12 @@ class Article(Base):
 
     # 主题相关元数据
     image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # 配图署名（Openverse 的 creator + license）
+    # 配图署名（如 "Photo by Annie Spratt on Unsplash"）
     image_credit: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 图源（unsplash / pexels / wikimedia / openverse）
+    image_provider: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    # 摄影师主页（Unsplash 场景下已带 utm，供 App 回链）
+    image_credit_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     published_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     fetched_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
     published_date: Mapped[dt.date] = mapped_column(Date, index=True, default=dt.date.today)

@@ -74,22 +74,33 @@ def _audio_meta(v: ArticleVersion, base: str, rev: str = "") -> dict[str, Any] |
 def _image_meta(a: Article) -> dict[str, Any]:
     """配图信息。
 
-    对外只暴露 **CC0 / Public Domain** 图片（Openverse 抓的，credit 里带署名）。
+    只对外暴露图源抓来的合规图（unsplash / pexels / wikimedia / openverse）。
     抓不到时返回渐变占位描述，App 可直接渲染色块。
-    非 CC0 的新闻原图不对外输出 —— 商用有版权风险，且热链易失效。
+    非合规的新闻原图不对外输出 —— 商用有版权风险，且热链易失效。
+
+    `type=photo` 时附 `fallback` 渐变块：Unsplash/Pexels 走 hotlink，
+    App 侧网络取不到图（onError）时直接画它，保证永不空白。
     """
     from .images import placeholder
 
+    ph = placeholder(a.topic, a.title_original)
     url = (a.image_url or "").strip()
-    # 双重保险：即使是媒体域名（cdn.arstechnica.net 等）也不对外给
-    if url and _is_cc0_safe(url):
+    prov = (a.image_provider or "").strip().lower()
+
+    # 图源已知但不在白名单（例如被改成媒体原图）→ 一律降级占位
+    if prov and prov not in _SAFE_IMAGE_PROVIDERS:
+        return ph
+    # 老数据没有 provider：沿用域名黑名单粗筛
+    if url and (prov or _is_cc0_safe(url)):
         return {
             "type": "photo",
             "url": url,
+            "provider": prov,
             "credit": a.image_credit or "",
+            "credit_url": a.image_credit_url or "",
+            "fallback": {"type": "gradient", **{k: v for k, v in ph.items() if k != "type"}},
         }
-    ph = placeholder(a.topic, a.title_original)
-    return {"type": "gradient", **ph}
+    return ph
 
 
 # 已知媒体图床域名（含即视为非 CC0）
@@ -101,9 +112,13 @@ _MEDIA_HOSTS = (
 
 
 def _is_cc0_safe(url: str) -> bool:
-    """粗筛：媒体图床域名一律视为非 CC0。Openverse 结果不在此列表内。"""
+    """粗筛：媒体图床域名一律视为非 CC0。图库域名不在此列表内。"""
     low = url.lower()
     return not any(h in low for h in _MEDIA_HOSTS)
+
+
+# 允许对外输出的图源（与 images.PROVIDERS 对齐）
+_SAFE_IMAGE_PROVIDERS = {"unsplash", "pexels", "wikimedia", "openverse"}
 
 
 def _version_summary(v: ArticleVersion, a: Article, base: str, rev: str = "") -> dict[str, Any]:

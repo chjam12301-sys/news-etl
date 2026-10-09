@@ -92,10 +92,21 @@ class Settings(BaseSettings):
     export_json: bool = True
     public_base_url: str = ""        # App 端访问 JSON 的基地址，如 https://cdn.example.com
 
-    # ---- 配图（方案 B）----
-    # 统一走 Openverse（真 CC0 / Public Domain Mark），授权最干净、可商用。
-    # 抓不到时退回渐变占位块，绝不使用媒体原图（非 CC0，存在版权风险且热链易失效）。
+    # ---- 配图（多级图源降级）----
+    # 图源优先级，逗号分隔，命中即停；缺 key / 连不上 / 限流的源自动跳下一个。
+    # unsplash（需 key）→ pexels（需 key）→ wikimedia（免费）→ openverse（免费）
     image_fetch_enabled: bool = True
+    image_providers: str = "unsplash,pexels,wikimedia,openverse"
+    # Unsplash：https://unsplash.com/developers 申请 Access Key
+    # 走 API 必须 hotlink（不可转存 R2）+ 署名 + 回链带 utm
+    unsplash_access_key: str = ""
+    unsplash_app_name: str = "daily-english-news"   # utm_source，用英文小写连字符
+    # Pexels：https://www.pexels.com/api/ 申请 API Key
+    pexels_api_key: str = ""
+    # 拿到图片 URL 后探活，过滤死链（Openverse 直链失效率高）
+    image_verify_url: bool = True
+    image_retries: int = 1
+    image_timeout: float = 15.0
     # 是否允许用新闻原图兜底。默认 False —— 商用 App 应保持关闭。
     image_allow_source_fallback: bool = False
 
