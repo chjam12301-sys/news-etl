@@ -114,6 +114,14 @@ def main() -> int:
 
     # ---- 移出 Git ------------------------------------------------------
     print("\n从 Git 移除 content/audio ...")
+    # runner 上默认没有 git 身份，commit 会直接失败；而 push 在无新提交时
+    # 依然返回 0 —— 两者叠加会变成「报了成功、其实没提交」的假象。
+    if not _git("config", "user.email").stdout.strip():
+        _git("config", "user.email", "github-actions[bot]@users.noreply.github.com")
+        _git("config", "user.name", "github-actions[bot]")
+        print("  已设置 bot 提交身份")
+
+    before = _git("rev-parse", "HEAD").stdout.strip()
     _git("rm", "-r", "--cached", "--quiet", "content/audio")
     gi = REPO / ".gitignore"
     marker = "# 音频不入库：jsDelivr 单仓库 50MB 上限，音频由对象存储提供"
@@ -121,12 +129,17 @@ def main() -> int:
     if "content/audio/" not in text:
         gi.write_text(text.rstrip() + f"\n\n{marker}\ncontent/audio/\n")
     _git("add", ".gitignore")
-    _git("commit", "-m", "content: 音频迁出 Git（改由对象存储提供）")
+    _git("add", "-A")
+    c = _git("commit", "-m", "content: 音频迁出 Git（改由对象存储提供）")
+    after = _git("rev-parse", "HEAD").stdout.strip()
+    if after == before:
+        print(f"✗ 提交未生效: {c.stdout.strip()}{c.stderr.strip()}", file=sys.stderr)
+        return 1
     p = _git("push", "origin", "main")
     if p.returncode != 0:
         print(f"✗ 推送失败: {p.stderr[:300]}", file=sys.stderr)
         return 1
-    print("✓ 已推送")
+    print(f"✓ 已推送 {after[:7]}")
     return 0
 
 
