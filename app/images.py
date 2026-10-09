@@ -11,12 +11,21 @@
    注：Unsplash License 本身不要求署名，但 **API Guidelines 强制要求**。
 2. **Pexels**    —— 需 PEXELS_API_KEY。Pexels License 商用免费、不强制署名。
 3. **Wikimedia Commons** —— 无需 key，实测可达。走 `imageinfo` 拿 CC/PD 授权元数据。
-4. **Openverse** —— 无需 key，聚合 Flickr/Wikimedia/NASA。境外可达，国内常不通。
+4. **Openverse** —— 无需 key，聚合 Flickr/Wikimedia/NASA 等站的 CC 图；
+   取 `cc0,pdm,by,by-sa`（都可商用，by/by-sa 需署名，署名链路已有）。
+   境外可达，国内常不通。
+
+检索策略：宁缺毋滥
+----------------
+检索词**每一档都锚定标题实词**，从「标题前 3 词」逐步放宽到「单个实词」。
+**不使用泛化兜底词**（`news` / `technology computer` 这类）—— 那会让任何一篇
+科技新闻都配上一张泛泛的图，看起来配了其实不相关，比显示渐变占位块退化得多。
+全链路未命中就返回占位块，这是明确的设计，不是「缺图」。
 
 防缺图的六道闸
 --------------
 ① 图源链降级：一个源整体不可用（无 key / 连不上 / 限流）自动跳下一个；
-② 查询词降级：标题关键词 → 主题词 → 主题泛词 → 通用词，逐层放宽；
+② 查询词降级：标题 3 词 → 2 词 → 实词+主题词 → 单个实词，逐层放宽；
 ③ 瞬时错误重试：每个查询重试 N 次（settings.image_retries）；
 ④ URL 可达性校验：拿到链接后探活，过滤死链（Openverse 直链失效率高）；
 ⑤ 已有图不覆盖：重跑不会把已抓到的图清空（除非 force）；
@@ -55,7 +64,9 @@ TOPIC_QUERIES: dict[str, list[str]] = {
     "world": ["city street", "people travel", "world map", "landscape nature"],
 }
 
-GENERIC_QUERIES = ["news", "world", "city", "nature", "people"]
+# 注：曾有 GENERIC_QUERIES（news/world/city/nature/people）作为兜底，已删除。
+# 「配错图比没图更糟」——泛词会让任何一篇科技新闻都配上一张泛泛的图，
+# 比老老实实显示渐变占位块退化得多。宁可无图，不产出不相关的图。
 
 # 从标题里抽关键词（补充主题词，提升相关性）
 _STOP = {
@@ -370,7 +381,9 @@ async def search_openverse(
 ) -> ImageResult | None:
     params = {
         "q": query,
-        "license": "cc0,pdm",   # 只取 CC0 与 Public Domain Mark
+        # cc0 / pdm / by / by-sa 都可商用（by / by-sa 需署名，署名链路已经有了）。
+        # 早先只取 cc0,pdm 命中率太低；**不加 by-nc / by-nd**（禁商用）。
+        "license": "cc0,pdm,by,by-sa",
         "page_size": page_size,
         "mature": "false",
     }
@@ -386,7 +399,7 @@ async def search_openverse(
     if not results:
         return None
 
-    best = _best_by_ratio(results, prefer_license=("cc0", "pdm"))
+    best = _best_by_ratio(results, prefer_license=("cc0", "pdm", "by", "by-sa"))
     if not best or not best.get("url"):
         log.warning("[img] %r 有 %d 条但无可用url", query, len(results))
         return None
@@ -418,20 +431,29 @@ def resolve_provider(name: str) -> Callable[..., Awaitable[ImageResult | None]] 
 # 编排
 # --------------------------------------------------------------------------
 def _candidate_queries(topic: str, title: str) -> list[str]:
-    """构造检索词：标题关键词优先，再补主题词，逐层放宽。"""
-    topic = (topic or "").lower()
-    base = TOPIC_QUERIES.get(topic, [])
+    """构造检索词：**每一档都锚定标题实词**，逐层放宽组合长度。
+
+    为什么不用泛化兜底词
+    ------------------
+    「配错图比没图更糟」。用 `technology computer` / `news` 这类泛词兜底，
+    会让任何一篇科技新闻都配上一张泛泛的电脑图 —— 图看起来存在，内容却
+    毫不相干，比老老实实显示渐变占位块**退化得多**（渐变块是明确的设计，
+    泛图是"看起来配了其实没配"）。
+
+    所以这里的规则是：宁可返回空、交给占位块，也不产出不相关的图。
+    组合从「标题前 3 词」逐步放宽到「单个实词」，每一步仍然以标题为准；
+    最后一档 `实词 + 主题词` 也仍然含标题实词，不引入纯泛词。
+    """
+    base = TOPIC_QUERIES.get((topic or "").lower(), [])
     kws = keywords_from_title(title)
 
     queries: list[str] = []
     if kws:
-        queries.append(" ".join(kws[:2]))          # 标题关键词（最贴切）
-    queries.extend(base[:2])                      # 主题常用词
-    if kws and base:
-        queries.append(f"{kws[0]} {base[0]}")
-    if base:
-        queries.append(base[0])
-    queries.extend(GENERIC_QUERIES[:2])           # 通用兜底词
+        queries.append(" ".join(kws[:3]))            # 标题前 3 词：最具体
+        queries.append(" ".join(kws[:2]))            # 前 2 词
+        if base:
+            queries.append(f"{kws[0]} {base[0]}")    # 实词 + 主题词（仍以标题为主）
+        queries.append(kws[0])                        # 单个实词：相关性最弱、命中率最高
     return [q for q in dict.fromkeys(queries) if q]
 
 
