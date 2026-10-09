@@ -59,9 +59,10 @@ jobs:
           PY
           echo "== 6. aws cli 直传（60s 超时）=="
           echo ok > /tmp/probe.txt
+          export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION=auto
           timeout 60 aws s3 cp /tmp/probe.txt "s3://$R2_BUCKET/diag/probe.txt" \
             --endpoint-url "$EP" --no-progress 2>&1 | tail -3
-          echo "  exit=$?"
+          echo "  exit=${PIPESTATUS[0]}"
           echo "== 7. 公开域名 =="
           curl -s -o /dev/null -m 20 -w "  r2.dev: %{http_code}\n" \
             "https://pub-aba43a6fb1db4dc08fede1dbc81f3241.r2.dev/diag/probe.txt"
