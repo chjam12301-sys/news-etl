@@ -8,7 +8,7 @@
 
 | 版本 | 日期 | 状态 | 摘要 |
 |---|---|---|---|
-| **v2.6** | 2026-10-09 | ✅ 可用 | 🔴 **音频地址换域名**：由 `cdn.jsdelivr.net` 改为 `pub-*.r2.dev`（对象存储） |
+| **v2.6** | 2026-10-09 | ✅ 可用 | 🔴 **音频地址换域名**：由 `cdn.jsdelivr.net` 改为 `pub-aba43a6fb1db4dc08fede1dbc81f3241.r2.dev`（对象存储） |
 | **v2.5** | 2026-10-08 | ✅ 可用 | 新增 `has_translation`，明确告知译文是否可用 |
 | **v2.4** | 2026-10-07 | ✅ 可用 | 🔴 **修正 v2.3**：`content_hash` 补入 `cs`/`ce`/`si` 字段 |
 | **v2.3** | 2026-10-07 | ⚠️ 已被 v2.4 修正 | 列表项新增 `content_hash`，App 据此判断是否重新下载 |
@@ -43,7 +43,7 @@
 
 ```
 旧: https://cdn.jsdelivr.net/gh/<repo>@<40位commit>/content/audio/31/en_a1.mp3
-新: https://pub-xxx.r2.dev/audio/31/en_a1.mp3
+新: https://pub-aba43a6fb1db4dc08fede1dbc81f3241.r2.dev/audio/31/en_a1.mp3
 ```
 
 对象存储的地址是**永久稳定**的，跟仓库 commit 无关。因此：
@@ -53,12 +53,23 @@
   `timeline` 变 → `content_hash` 变 → App 重新下载
 - 也就是说，**你原有的 `content_hash` 判断逻辑完全不用改**
 
+> ⚠️ 域名 `pub-aba43a6fb1db4dc08fede1dbc81f3241.r2.dev` 是**固定常量**，
+> 文中所有示例都用同一个值。它是桶创建时 Cloudflare 分配的，不会变，
+> 也不需要 App 去推导或替换（若日后换成自定义域名，会另发一次公告）。
+
 **App 侧要做的**
 
-1. 音频域名白名单加上 `*.r2.dev`（或直接不做域名限制）
+1. 音频域名白名单加上上面那个完整域名（按后缀匹配就写 `*.r2.dev`，
+   这里的 `*` 是通配符，不是占位符）
 2. 如果你按 URL 字符串做了本地缓存 key，改成按 `content_hash` 或
    `article_id + level_code` 做 key —— 否则同一份音频会因为 URL 变了而重复下载
 3. 直接读 JSON 里的 `audio.url` 即可，不要自己拼地址
+
+**`<article_id>` 不是连续的**
+
+历史上有文章被清理过，所以 ID 序列存在断档（当前 1~32 之间 **没有 2 号**）。
+这是正常的：**没有任何详情或音频引用 2 号**，不会出现取不到的链接。
+请始终以索引里的 `article_id` 为准，不要假设它是连续自增的。
 
 ---
 

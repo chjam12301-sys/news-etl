@@ -18,7 +18,7 @@
   Cloudflare R2                      GitHub 仓库 content/
   （音频 mp3，214MB）                 （**只有 JSON**，16MB）
         ↓                                ↓
-  pub-*.r2.dev                     jsDelivr CDN（@commit 不可变版本）
+  pub-aba43a6fb1db4dc08fede1dbc81f3241.r2.dev                     jsDelivr CDN（@commit 不可变版本）
         └───────────────┬────────────────┘
                         ↓
                     App 直接读
@@ -92,7 +92,7 @@ of 50 MB`）—— 表现是「老文章能看，新文章点进去 404」。
 | `R2_BUCKET` | 桶名，如 `news-etl-audio` |
 | `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | R2 API Token |
 | `R2_ENDPOINT` | `https://<account id>.r2.cloudflarestorage.com` |
-| `R2_PUBLIC_BASE` | `https://pub-xxx.r2.dev` |
+| `R2_PUBLIC_BASE` | `https://pub-aba43a6fb1db4dc08fede1dbc81f3241.r2.dev` |
 
 ⚠️ 仓库是 **public**，任何凭据都不得写进代码或提交进 git。
 `scripts/republish.py` 曾硬编码过数据库密码，已移除。
