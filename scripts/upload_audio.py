@@ -135,6 +135,16 @@ def main() -> int:
     if after == before:
         print(f"✗ 提交未生效: {c.stdout.strip()}{c.stderr.strip()}", file=sys.stderr)
         return 1
+    # 期间远端可能已有新提交（本地提交会变成非快进）——先 rebase 再推
+    _git("fetch", "origin", "main")
+    if _git("rev-parse", "HEAD").stdout.strip() != _git(
+        "rev-parse", "origin/main"
+    ).stdout.strip():
+        rb = _git("rebase", "origin/main")
+        if rb.returncode != 0:
+            _git("rebase", "--abort")
+            print(f"✗ rebase 冲突，已放弃本地提交: {rb.stderr[:300]}", file=sys.stderr)
+            return 1
     p = _git("push", "origin", "main")
     if p.returncode != 0:
         print(f"✗ 推送失败: {p.stderr[:300]}", file=sys.stderr)
