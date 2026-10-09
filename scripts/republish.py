@@ -81,6 +81,8 @@ def _read_index_at(repo_dir: str, rev: str) -> dict | None:
 def main() -> int:
     ap = argparse.ArgumentParser(description="重新发布并校验索引")
     ap.add_argument("--dry", action="store_true", help="只校验现状，不改动")
+    ap.add_argument("--days", type=int, default=3,
+                    help="重新导出最近几天的详情 JSON（默认 3；配图/字段结构变更时传 30）")
     args = ap.parse_args()
 
     init_db()
@@ -115,7 +117,7 @@ def main() -> int:
     else:
         print("现状有问题，按四阶段重新发布。\n")
 
-    out = publish_all(db=db, storage=st, topics_days=3,
+    out = publish_all(db=db, storage=st, topics_days=args.days,
                       commit_msg="content: 重新发布（修正链接）")
     print(f"\n发布结果 ok={out.get('ok')}")
     print(f"  校验    : {out.get('verify')}")

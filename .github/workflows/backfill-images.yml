@@ -74,12 +74,24 @@ jobs:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: python scripts/republish.py
+        # --days 30 必须大于 GITHUB_KEEP_DAYS(14)，否则老详情 JSON 不会被重写，
+        # 结果是库里已是 Unsplash 图、content/ 里还是旧格式（有图无署名）。
+        run: python scripts/republish.py --days 30
 
       - name: 抽查产出里的署名
         if: ${{ inputs.dry_run != 'true' }}
         run: |
-          echo "--- 署名样本 ---"
-          grep -rho '"credit": "[^"]*"' content/data/versions/*.json 2>/dev/null | sort -u | head -5
-          echo "--- 图源分布 ---"
-          grep -rho '"provider": "[^"]*"' content/data/versions/*.json 2>/dev/null | sort | uniq -c
+          python - <<'PY'
+          import json, glob, collections
+          c = collections.Counter(); bad = 0
+          for f in glob.glob("content/data/versions/*.json"):
+              im = (json.load(open(f, encoding="utf-8")).get("image") or {})
+              c[(im.get("type"), im.get("provider") or "(空)")] += 1
+              if im.get("type") == "photo" and not (
+                  im.get("credit") and im.get("credit_url") and im.get("source_url")
+              ):
+                  bad += 1
+          for k, v in sorted(c.items(), key=lambda x: -x[1]):
+              print(f"{v:>4}  {k[0]:<9} {k[1]}")
+          print(f"有图但署名不完整: {bad}  （应为 0）")
+          PY
