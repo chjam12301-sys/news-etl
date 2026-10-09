@@ -63,6 +63,8 @@ def init_db() -> None:
             "image_credit": "TEXT",
             "image_provider": "VARCHAR(24)",
             "image_credit_url": "TEXT",
+            "image_source_url": "TEXT",
+            "image_author": "VARCHAR(120)",
             "rewrite_status": "VARCHAR(24)",
             "tts_status": "VARCHAR(24)",
             "error": "TEXT",
@@ -124,6 +126,10 @@ class Article(Base):
     image_provider: Mapped[str | None] = mapped_column(String(24), nullable=True)
     # 摄影师主页（Unsplash 场景下已带 utm，供 App 回链）
     image_credit_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 图片详情页 / 图源页（署名里「on Unsplash」那个词指向这里）
+    image_source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 作者名（App 端拼署名时用，避免从 credit 文本里正则拆）
+    image_author: Mapped[str | None] = mapped_column(String(120), nullable=True)
     published_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     fetched_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
     published_date: Mapped[dt.date] = mapped_column(Date, index=True, default=dt.date.today)

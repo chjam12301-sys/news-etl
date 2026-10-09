@@ -122,6 +122,8 @@ async def _process_article(
             article.image_credit = ""
             article.image_provider = ""
             article.image_credit_url = ""
+            article.image_source_url = ""
+            article.image_author = ""
 
         try:
             img = await find_image(article.topic, article.title_original)
@@ -130,6 +132,8 @@ async def _process_article(
                 article.image_credit = img.attribution
                 article.image_provider = img.provider
                 article.image_credit_url = img.creator_url
+                article.image_source_url = img.source_url
+                article.image_author = img.creator
                 log.info("[img] article_id=%s → %s %s", article.id, img.provider, img.url[:70])
             else:
                 # 由 _image_meta 走渐变占位

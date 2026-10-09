@@ -24,7 +24,10 @@ UNSPLASH_PAYLOAD = {
                 "raw": "https://images.unsplash.com/photo-abc123?ixid=XYZ",
                 "regular": "https://images.unsplash.com/photo-abc123?w=1080",
             },
-            "links": {"download_location": "https://api.unsplash.com/photos/abc123/download"},
+            "links": {
+                "html": "https://unsplash.com/photos/abc123",
+                "download_location": "https://api.unsplash.com/photos/abc123/download",
+            },
             "user": {
                 "name": "Annie Spratt",
                 "links": {"html": "https://unsplash.com/@anniespratt"},
@@ -57,8 +60,11 @@ def test_unsplash_parses_hotlink_attribution_and_download(tmp_path, monkeypatch)
         "https://unsplash.com/@anniespratt"
         "?utm_source=daily-english-news&utm_medium=referral"
     )
+    # 「on Unsplash」那个词指向图片详情页（不是首页），且同样带 utm
+    assert res.source == "Unsplash"
     assert res.source_url == (
-        "https://unsplash.com/?utm_source=daily-english-news&utm_medium=referral"
+        "https://unsplash.com/photos/abc123"
+        "?utm_source=daily-english-news&utm_medium=referral"
     )
     assert res.download_location.endswith("/download")
 
@@ -142,6 +148,8 @@ def test_exporter_photo_carries_gradient_fallback():
         image_credit="Photo by Annie Spratt on Unsplash",
         image_provider="unsplash",
         image_credit_url="https://unsplash.com/@anniespratt?utm_source=x&utm_medium=referral",
+        image_source_url="https://unsplash.com/photos/abc123?utm_source=x&utm_medium=referral",
+        image_author="Annie Spratt",
     )
     meta = _image_meta(art)
     assert meta["type"] == "photo"
@@ -174,6 +182,8 @@ def test_rest_schema_exposes_structured_image():
         image_credit="Photo by Annie Spratt on Unsplash",
         image_provider="unsplash",
         image_credit_url="https://unsplash.com/@anniespratt?utm_source=x&utm_medium=referral",
+        image_source_url="https://unsplash.com/photos/abc123?utm_source=x&utm_medium=referral",
+        image_author="Annie Spratt",
         source="", source_url="",
         published_date=dt.date.today(), published_at=None,
         summary_original="", body_original="", title_original2="", fetched_at=None,
@@ -186,6 +196,10 @@ def test_rest_schema_exposes_structured_image():
     out = ArticleSummaryOut.from_row(ver, art)
     assert out.image["type"] == "photo"
     assert out.image["credit"] == "Photo by Annie Spratt on Unsplash"
+    assert out.image["credit_url"].startswith("https://unsplash.com/@anniespratt")
+    assert out.image["source"] == "Unsplash"          # 显示名，不是 provider 标识
+    assert out.image["author"] == "Annie Spratt"
+    assert out.image["source_url"].startswith("https://unsplash.com/photos/abc123")
     assert out.image["fallback"]["type"] == "gradient"
     # 旧客户端仍在读 image_url，必须保留
     assert out.image_url == art.image_url

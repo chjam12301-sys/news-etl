@@ -96,8 +96,12 @@ def _image_meta(a: Article) -> dict[str, Any]:
             "type": "photo",
             "url": url,
             "provider": prov,
-            "credit": a.image_credit or "",
-            "credit_url": a.image_credit_url or "",
+            # 署名渲染成：Photo by <作者→credit_url> on <图源→source_url>
+            "credit": a.image_credit or "",           # 全文，兜底用
+            "author": a.image_author or "",            # 作者名
+            "credit_url": a.image_credit_url or "",   # 摄影师主页
+            "source": _PROVIDER_LABEL.get(prov, prov.title()),   # 显示名，如 Unsplash
+            "source_url": a.image_source_url or "",   # 图片详情页
             "fallback": {"type": "gradient", **{k: v for k, v in ph.items() if k != "type"}},
         }
     return ph
@@ -117,8 +121,16 @@ def _is_cc0_safe(url: str) -> bool:
     return not any(h in low for h in _MEDIA_HOSTS)
 
 
-# 允许对外输出的图源（与 images.PROVIDERS 对齐）
+# 允许对外输出的图源（与 images.PROVIDER_NAMES 对齐）
 _SAFE_IMAGE_PROVIDERS = {"unsplash", "pexels", "wikimedia", "openverse"}
+
+# 图源标识 → 显示名（署名里「on ___」那个词）
+_PROVIDER_LABEL = {
+    "unsplash": "Unsplash",
+    "pexels": "Pexels",
+    "wikimedia": "Wikimedia Commons",
+    "openverse": "Openverse",
+}
 
 
 def _version_summary(v: ArticleVersion, a: Article, base: str, rev: str = "") -> dict[str, Any]:

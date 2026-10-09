@@ -248,7 +248,9 @@ async def search_unsplash(query: str, *, timeout: float = 15.0) -> ImageResult |
         creator=(user.get("name") or "")[:80],
         creator_url=_utm(user.get("links", {}).get("html") or ""),
         source="Unsplash",
-        source_url=_utm("https://unsplash.com/"),
+        # 「Unsplash」这个词链到图片详情页（官方示例链首页，链详情页同样满足
+        # 「links back to Unsplash」，且给摄影师的曝光更直接）
+        source_url=_utm((best.get("links") or {}).get("html") or "https://unsplash.com/"),
         width=int(best.get("width") or 0),
         height=int(best.get("height") or 0),
         download_location=(best.get("links") or {}).get("download_location") or "",
@@ -292,7 +294,7 @@ async def search_pexels(query: str, *, timeout: float = 15.0) -> ImageResult | N
         creator=(best.get("photographer") or "")[:80],
         creator_url=best.get("photographer_url") or "",
         source="Pexels",
-        source_url="https://www.pexels.com/",
+        source_url=best.get("url") or "https://www.pexels.com/",
         width=int(best.get("width") or 0),
         height=int(best.get("height") or 0),
     )
@@ -354,6 +356,7 @@ async def search_wikimedia(query: str, *, timeout: float = 15.0) -> ImageResult 
         creator=best["creator"],
         source="Wikimedia Commons",
         source_url=best.get("descpage") or "https://commons.wikimedia.org/",
+        # Wikimedia 的 url 已是图片页；Creator 页在 extmetadata 里未必有，不单独存
         width=int(best.get("width") or 0),
         height=int(best.get("height") or 0),
     )
@@ -396,6 +399,7 @@ async def search_openverse(
         license_version=best.get("license_version") or "",
         creator=(best.get("creator") or "")[:80],
         source=(best.get("source") or "")[:40],
+        source_url=best.get("foreign_landing_url") or "",
         width=int(best.get("width") or 0),
         height=int(best.get("height") or 0),
     )

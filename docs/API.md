@@ -480,7 +480,10 @@ const item = day.versions.ja.ja_n3.find(x => x.article_id === currentId);
     "url": "https://images.unsplash.com/photo-1?ixid=XYZ&w=1600&q=75&fm=jpg&fit=max",
     "provider": "unsplash",
     "credit": "Photo by Annie Spratt on Unsplash",
+    "author": "Annie Spratt",
     "credit_url": "https://unsplash.com/@anniespratt?utm_source=daily-english-news&utm_medium=referral",
+    "source": "Unsplash",
+    "source_url": "https://unsplash.com/photos/abc123?utm_source=daily-english-news&utm_medium=referral",
     "fallback": { "type": "gradient", "from": "hsl(285, 42%, 62%)", "to": "hsl(323, 46%, 48%)", "label": "TECH" }
   },
 
@@ -520,6 +523,22 @@ const item = day.versions.ja.ja_n3.find(x => x.article_id === currentId);
 
 > 📌 **v2.2 新增**：本节整体新增，`image` 字段结构在 v2.1 时是裸字符串。
 
+### v2.7 变更（2026-10-09）
+
+配图从「单一 Openverse 图源」改为**多级图源降级，优先 Unsplash**。
+
+| 变更 | 说明 |
+|---|---|
+| 新增 `provider` | 图源标识：`unsplash` / `pexels` / `wikimedia` / `openverse` |
+| 新增 `author` | 作者名，供署名拼接 |
+| 新增 `source` / `source_url` | 图源显示名与图片详情页（署名里「on Unsplash」指向它） |
+| 新增 `fallback` | 渐变兜底块，图片取不到时直接画它 |
+| `credit` | 仍是署名全文，但 App 需按下方格式把两个词做成链接 |
+| `image_url` | **保留不变**，老客户端不会中断 |
+
+**迁移**：只读 `image_url` 的老客户端能继续跑，但**拿不到署名**，
+上线 Unsplash 前必须切到 `image` 对象。详见 [APP-封面图需求.md](./APP-封面图需求.md)。
+
 `image.type` 有两种取值，**App 必须分支处理**：
 
 ### `type: "photo"` —— 真实图片
@@ -530,7 +549,10 @@ const item = day.versions.ja.ja_n3.find(x => x.article_id === currentId);
   "url": "https://images.unsplash.com/photo-1?ixid=XYZ&w=1600&q=75&fm=jpg&fit=max",
   "provider": "unsplash",
   "credit": "Photo by Annie Spratt on Unsplash",
+  "author": "Annie Spratt",
   "credit_url": "https://unsplash.com/@anniespratt?utm_source=daily-english-news&utm_medium=referral",
+  "source": "Unsplash",
+  "source_url": "https://unsplash.com/photos/abc123?utm_source=daily-english-news&utm_medium=referral",
   "fallback": {
     "type": "gradient",
     "from": "hsl(285, 42%, 62%)",
@@ -543,13 +565,29 @@ const item = day.versions.ja.ja_n3.find(x => x.article_id === currentId);
 
 | 字段 | 说明 |
 |---|---|
-| `provider` | `unsplash` / `pexels` / `wikimedia` / `openverse` |
-| `credit` | 一行署名文本，**必须显示在图片上或紧邻图片** |
-| `credit_url` | 摄影师主页（已带 utm），**必须可点击** |
+| `provider` | 图源标识：`unsplash` / `pexels` / `wikimedia` / `openverse` |
+| `credit` | 署名全文，**必须显示在图片上或紧邻图片**（兜底文案） |
+| `author` | 作者名 |
+| `credit_url` | 摄影师主页（已带 utm） |
+| `source` | 图源**显示名**，如 `Unsplash` |
+| `source_url` | 图片详情页（已带 utm） |
 | `fallback` | 渐变兜底块，`onError` 时直接画它，永不空白 |
 
+### 署名的标准渲染
+
+```
+Photo by 作者名 on Unsplash
+           └─ 链 credit_url      └─ 链 source_url
+```
+
+**「作者名」和「Unsplash」这两个词各自是下划线超链接**，其余为纯文本：
+
+> Photo by <u>Annie Spratt</u> on <u>Unsplash</u>
+
+完整需求见 [APP-封面图需求.md](./APP-封面图需求.md)。
+
 > ⚠️ **署名是 API 合规要求，不是可选项**（Unsplash License 不强制，但
-> Unsplash **API Guidelines 强制**：必须署名摄影师 + Unsplash 并回链主页）。
+> Unsplash **API Guidelines 强制**：必须署名摄影师 + Unsplash 并回链）。
 > 图片走 **hotlink**，不要下载转存到自己的 CDN —— 这也是 Unsplash 的硬性规则。
 
 ### `type: "gradient"` —— 渐变色块
@@ -570,7 +608,7 @@ const item = day.versions.ja.ja_n3.find(x => x.article_id === currentId);
 
 | # | 必做 | 不做会怎样 |
 |---|---|---|
-| 1 | **署名必须可见且可点**：`credit` 显示在图上或紧邻图片，`credit_url` 用系统浏览器打开 | 违反 Unsplash API Guidelines，会被吊销 key |
+| 1 | **署名可见且两处可点**：作者名 → `credit_url`，图源名 → `source_url` | 违反 Unsplash API Guidelines，会被吊销 key |
 | 2 | **不要下载转存**：图片只按 `url` 直接加载，**不要**缓存到自己的 CDN/OSS 再复用 | Unsplash 硬性要求 hotlink（转存即违规） |
 | 3 | **`onError` 切 `fallback`**：加载失败立刻画渐变块 | Unsplash CDN 在部分网络下取不到，会白屏 |
 
@@ -595,9 +633,16 @@ function Cover({ image }) {
   return (
     <View>
       <Image source={{ uri: image.url }} style={cover} onError={() => setFailed(true)} />
-      {/* 署名：必须可见、可点 */}
-      <Text style={credit} onPress={() => Linking.openURL(image.credit_url)}>
-        {image.credit}
+      {/* 署名：作者名与图源名各自可点 */}
+      <Text style={credit}>
+        Photo by{' '}
+        <Text style={link} onPress={() => Linking.openURL(image.credit_url)}>
+          {image.author}
+        </Text>
+        {' on '}
+        <Text style={link} onPress={() => Linking.openURL(image.source_url)}>
+          {image.source}
+        </Text>
       </Text>
     </View>
   );
@@ -621,11 +666,15 @@ struct CoverView: View {
                         img.resizable().scaledToFill()
                     }
                 }
-                if let credit = image.credit, let url = image.creditURL {
-                    Link(credit, destination: url)               // 署名：可见 + 可点
-                        .font(.caption2).foregroundStyle(.white)
-                        .padding(6).background(.black.opacity(0.35))
+                // 署名：Photo by <作者> on <图源>，两处各自可点
+                HStack(spacing: 0) {
+                    Text("Photo by ")
+                    Link(image.author, destination: image.creditURL).underline()
+                    Text(" on ")
+                    Link(image.source, destination: image.sourceURL).underline()
                 }
+                .font(.caption2).foregroundStyle(.white)
+                .padding(6).background(.black.opacity(0.35))
             }
         } else {
             let g = image.fallback ?? image
@@ -639,7 +688,8 @@ struct CoverView: View {
 
 ### 验收清单
 
-- [ ] 每张图上都能看到 `credit` 文字，点击能跳到摄影师主页
+- [ ] 每张图上都能看到「Photo by 作者名 on Unsplash」，两个词都是下划线链接
+- [ ] 点作者名 → 摄影师主页；点 `Unsplash` → 图片详情页；两个 URL 都带 utm
 - [ ] 断网 / 代理到不可达网络时，封面自动变渐变块，不白屏
 - [ ] 没有把 `image.url` 下载后上传到自己的对象存储
 - [ ] 列表页与详情页用的是**同一个** `image` 对象（署名不会在一处丢失）
@@ -830,7 +880,10 @@ App 启动
     "url": "https://images.unsplash.com/photo-1?ixid=XYZ&w=1600&q=75&fm=jpg&fit=max",
     "provider": "unsplash",
     "credit": "Photo by Annie Spratt on Unsplash",
+    "author": "Annie Spratt",
     "credit_url": "https://unsplash.com/@anniespratt?utm_source=daily-english-news&utm_medium=referral",
+    "source": "Unsplash",
+    "source_url": "https://unsplash.com/photos/abc123?utm_source=daily-english-news&utm_medium=referral",
     "fallback": { "type": "gradient", "from": "hsl(285, 42%, 62%)", "to": "hsl(323, 46%, 48%)", "label": "TECH" }
   },
   "published_date": "2026-10-06",
