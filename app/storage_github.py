@@ -95,6 +95,14 @@ class GitHubStorage:
 
     def _commit(self, message: str) -> bool:
         """把content/ 的变更提交并推送。返回是否有实际推送。"""
+        # runner 上默认没有 git 身份，`git commit` 会直接失败；此时 push 无内容
+        # 可推、返回 0，于是「已推送」的日志是假的（曾导致 latest 指向旧索引）。
+        if not self._git("config", "user.email", check=False).stdout.strip():
+            self._git("config", "user.email",
+                      "github-actions[bot]@users.noreply.github.com", check=False)
+            self._git("config", "user.name", "github-actions[bot]", check=False)
+            log.info("[gh] 已设置 bot 提交身份")
+        before = self.current_ref()
         # content/ 在 .gitignore 里（避免日常 git add 误提交），
         # 这里用 -f 强制加入 —— 内容本来就该进仓库供CDN 读取
         self._git("add", "-f", CONTENT_DIR, check=False)
@@ -106,7 +114,13 @@ class GitHubStorage:
         if not r.stdout.strip():
             log.info("[gh] content/ 无变化")
             return False
-        self._git("commit", "-m", message, check=False)
+        c = self._git("commit", "-m", message, check=False)
+        if self.current_ref() == before:
+            # 没有新 commit就往下走的话，push 会「成功」但远端根本没变，
+            # latest 于是指向一个不含新内容的索引 —— 必须硬失败。
+            raise RuntimeError(
+                f"[gh] 提交未生效: {c.stderr.strip()[:200] or c.stdout.strip()[:200]}"
+            )
         p = self._git("push", "origin", self.branch, check=False)
         if p.returncode != 0:
             # 并发推送可能失败。rebase 冲突时 git 会把冲突标记写进工作区文件，
@@ -129,10 +143,17 @@ class GitHubStorage:
             if p.returncode != 0:
                 raise RuntimeError(f"[gh] 推送失败: {p.stderr[:200]}")
 
+        # 自检：本地这个 commit 必须真的在远端，否则「已推送」依然是假的
+        head = self.current_ref()
+        self._git("fetch", "origin", self.branch, check=False)
+        if self._git("merge-base", "--is-ancestor", head,
+                     f"origin/{self.branch}", check=False).returncode != 0:
+            raise RuntimeError(f"[gh] 推送后远端仍无 {head}，本次发布不可信")
+
         # 这里**不**更新 latest.json。
         # 索引里的链接必须在内容提交之后生成、再经校验，才可以更新指针，
         # 顺序由 app/publish.publish_all 统一编排。
-        log.info("[gh] 已推送 %s", message)
+        log.info("[gh] 已推送 %s → %s", message, head)
         return True
 
     def _content_has_conflict_markers(self) -> bool:
@@ -196,13 +217,13 @@ class GitHubStorage:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_bytes(raw)
 
-        # 这次写本身也是一次提交，推上去才算生效
-        self._git("add", "-f", CONTENT_DIR, check=False)
-        r = self._git("status", "--porcelain", "--", CONTENT_DIR, check=False)
-        if r.stdout.strip():
-            self._git("commit", "-m", f"chore: latest.json → {ref}", check=False)
-            self._git("push", "origin", self.branch, check=False)
-        log.info("[gh] latest.json 已指向 @%s", ref)
+        # 这次写本身也是一次提交，推上去才算生效。
+        # 走 _commit 统一路径：那里会补 git 身份、并在推送后核对远端确有该commit
+        # （此前这里自己写的一套「commit + push」不带身份，失败时静默假成功）。
+        if self._commit(f"chore: latest.json → {ref}"):
+            log.info("[gh] latest.json 已指向 @%s", ref)
+        else:
+            log.info("[gh] latest.json 无变化，仍指向 @%s", ref)
 
     # ---- Storage 协议 --------------------------------------------------- #
     def put(self, key: str, data: bytes, *, content_type: str | None = None) -> StoredObject:

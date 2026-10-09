@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -156,3 +157,73 @@ class TestVerifyExternalAudio:
         )
         assert not r.ok
         assert 3 in r.missing_audio
+
+
+class TestCommitNoFalseSuccess:
+    """回归：runner 上没有 git 身份时，commit 静默失败、push 空推返回 0，
+    于是日志打印「已推送」而远端根本没变 —— latest 会指向不含新内容的索引。
+    """
+
+    def _storage(self, tmp_path: Path):
+        """带真实 origin（裸库）的仓库，这样推送自检是真实生效的。"""
+        from app.storage_github import GitHubStorage
+
+        remote = tmp_path / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+
+        r = tmp_path / "repo2"
+        (r / "content" / "data").mkdir(parents=True)
+        (r / "content" / "data" / "seed.json").write_text("{}")
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=r, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=r, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=r, check=True)
+        _git(r, "add", "-A")
+        _git(r, "commit", "-qm", "init")
+        _git(r, "remote", "add", "origin", str(remote))
+        _git(r, "push", "-q", "origin", "HEAD:main")
+        return GitHubStorage("o/r", local_dir=str(r)), r
+
+    def test_raises_when_commit_does_not_take_effect(self, tmp_path: Path, monkeypatch):
+        import subprocess as sp
+
+        st, r = self._storage(tmp_path)
+        (r / "content" / "data" / "x.json").write_text("{}")
+
+        real = st._git
+
+        def fake(*args, **kw):
+            if args and args[0] == "commit":
+                return sp.CompletedProcess(args=[], returncode=1, stdout="",
+                                           stderr="Author identity unknown")
+            return real(*args, **kw)
+
+        monkeypatch.setattr(st, "_git", fake)
+        with pytest.raises(RuntimeError, match="提交未生效"):
+            st._commit("msg")
+
+    def test_sets_identity_when_missing(self, tmp_path: Path, monkeypatch):
+        # runner 上既没有仓库级身份，也没有全局身份 —— 用空的全局配置模拟
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+        monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+        st, r = self._storage(tmp_path)
+        _git(r, "config", "--unset", "user.email")
+        _git(r, "config", "--unset", "user.name")
+        (r / "content" / "data" / "y.json").write_text("{}")
+
+        assert st._commit("msg") is True
+        assert "github-actions[bot]@users.noreply.github.com" in _git(
+            r, "config", "user.email"
+        )
+        # 提交必须真的落到远端
+        assert "y.json" in _git(r, "ls-tree", "-r", "--name-only", "origin/main")
+
+    def test_latest_pointer_uses_shared_commit_path(self):
+        """latest.json 的提交必须走 _commit（带身份与推送自检），不能自己写一套。"""
+        from pathlib import Path as P
+
+        src = (P(__file__).parent.parent / "app" / "storage_github.py").read_text(
+            encoding="utf-8"
+        )
+        body = src.split("def refresh_latest_pointer")[1].split("def put(")[0]
+        assert "_commit(" in body
+        assert '"push", "origin"' not in body
