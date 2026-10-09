@@ -227,3 +227,41 @@ class TestCommitNoFalseSuccess:
         body = src.split("def refresh_latest_pointer")[1].split("def put(")[0]
         assert "_commit(" in body
         assert '"push", "origin"' not in body
+
+
+class TestIndexShortPath:
+    """App 经 latest.json 拉的是 content/index.json（短路径）。
+    只写 data/index.json 会让短路径停在旧版本 —— 必须同源写出。"""
+
+    def test_export_index_writes_both_paths(self):
+        from pathlib import Path as P
+
+        src = (P(__file__).parent.parent / "app" / "exporter.py").read_text(encoding="utf-8")
+        body = src.split("def export_index")[1].split("def _all_levels")[0]
+        assert "INDEX_SHORT_KEY" in body
+        assert body.count("st.put(") == 2, "data/index.json 与 index.json 都要写"
+
+    def test_publish_blocks_on_short_path_mismatch(self):
+        from pathlib import Path as P
+
+        src = (P(__file__).parent.parent / "app" / "publish.py").read_text(encoding="utf-8")
+        assert "index_short_path_mismatch" in src
+
+
+class TestIndexShortPath:
+    """App 经 latest.json 拉的是 content/index.json（短路径）。
+    只写 data/index.json 会让短路径停在旧版本 —— 必须同源写出。"""
+
+    def test_export_index_writes_both_paths(self):
+        from pathlib import Path as P
+
+        src = (P(__file__).parent.parent / "app" / "exporter.py").read_text(encoding="utf-8")
+        body = src.split("def export_index")[1].split("def _all_levels")[0]
+        assert "INDEX_SHORT_KEY" in body
+        assert body.count("st.put(") == 2, "data/index.json 与 index.json 都要写"
+
+    def test_publish_blocks_on_short_path_mismatch(self):
+        from pathlib import Path as P
+
+        src = (P(__file__).parent.parent / "app" / "publish.py").read_text(encoding="utf-8")
+        assert "index_short_path_mismatch" in src

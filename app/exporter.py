@@ -37,6 +37,10 @@ log = logging.getLogger("exporter")
 
 MAX_DAYS_IN_INDEX = 60
 
+# App 经 latest.json 实际拉取的短路径。必须与 data/index.json 保持一致，
+# 否则 App 读到的是历史版本（曾出现短路径停在 @0605a4d 的情况）。
+INDEX_SHORT_KEY = "index.json"
+
 
 def _audio_meta(v: ArticleVersion, base: str, rev: str = "") -> dict[str, Any] | None:
     a = v.audio
@@ -309,8 +313,14 @@ def export_index(db: Session, days: int = MAX_DAYS_IN_INDEX, rev: str = "") -> s
         ],
     }
     key = index_key()
-    st.put(key, json.dumps(payload, ensure_ascii=False).encode("utf-8"), content_type="application/json; charset=utf-8")
-    log.info("[export] 全量索引已更新，%d 天", len(date_list))
+    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    st.put(key, raw, content_type="application/json; charset=utf-8")
+    # 短路径 content/index.json 是 App 经 latest.json 实际拉取的那个地址。
+    # 只写 data/index.json 会让短路径停留在旧版本（曾导致 App 读到陈旧索引）。
+    short = INDEX_SHORT_KEY
+    if short != key:
+        st.put(short, raw, content_type="application/json; charset=utf-8")
+    log.info("[export] 全量索引已更新，%d 天（%s + %s）", len(date_list), key, short)
     return key
 
 
@@ -332,14 +342,8 @@ def export_all(db: Session) -> dict[str, Any]:
         ).scalars().all()
         day_keys = [export_day(db, d) for d in dates if d]
         idx = export_index(db)
-
-        # 同步短路径入口 content/index.json —— App 拉的是这个路径，
-        # 若只写 data/index.json 会导致短路径长期停留在旧版本。
-        canonical = get_storage().read(idx)
-        if canonical:
-            get_storage().put("index.json", canonical,
-                              content_type="application/json; charset=utf-8")
-
+        # 短路径 content/index.json 已由 export_index 一并写入（App 拉的是这个
+        # 路径，只写 data/index.json 会让短路径长期停留在旧版本）。
         return {"exported": True, "day_keys": day_keys, "index_key": idx}
     except Exception as exc:  # noqa: BLE001
         log.error("[export] 失败: %s", exc)

@@ -315,6 +315,16 @@ def publish_all(*, db, storage, topics_days: int = 3, commit_msg: str = "content
         # ── ③ 全量校验：索引引用的每一份详情与音频 ──────────────────
         raw = _read_in_commit(st.repo_dir, index_rev, index_key())
         index = json.loads(raw) if raw else {}
+
+        # 短路径 content/index.json 是 App 经 latest.json 实际拉取的地址。
+        # 它若与 data/index.json 不一致，App 就会读到历史版本 —— 必须拦。
+        short = _read_in_commit(st.repo_dir, index_rev, "index.json")
+        if short != raw:
+            log.error("[publish] 短路径 index.json 与 %s 不一致", index_key())
+            result["ok"] = False
+            result["reason"] = "index_short_path_mismatch"
+            return result
+
         v = verify_published(
             repo_dir=st.repo_dir, rev=index_rev, index=index
         )
