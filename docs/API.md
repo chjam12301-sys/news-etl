@@ -8,7 +8,7 @@
 
 | 版本 | 日期 | 状态 | 摘要 |
 |---|---|---|---|
-| **v2.7** | 2026-10-09 | ✅ 可用 | 配图改为多级图源（优先 Unsplash）；`image` 增 `provider` / `credit_url` / `fallback` |
+| **v2.7** | 2026-10-09 | ✅ 可用 | 🔴 **封面图与署名（必读）**：配图改多级图源优先 Unsplash；`image` 增 `provider` / `author` / `source` / `source_url` / `fallback` |
 | **v2.6** | 2026-10-09 | ✅ 可用 | 🔴 **音频地址换域名**：由 `cdn.jsdelivr.net` 改为 `pub-aba43a6fb1db4dc08fede1dbc81f3241.r2.dev`（对象存储） |
 | **v2.5** | 2026-10-08 | ✅ 可用 | 新增 `has_translation`，明确告知译文是否可用 |
 | **v2.4** | 2026-10-07 | ✅ 可用 | 🔴 **修正 v2.3**：`content_hash` 补入 `cs`/`ce`/`si` 字段 |
@@ -17,6 +17,68 @@
 | **v2.1** | 2026-10-07 | ✅ 可用 | CDN 链接从写死 SHA 改为运行时查询（修「详情无时间轴」） |
 
 > 字段只增不改，**v2.0 的客户端代码无需修改即可跑在 v2.2 上**。
+
+---
+
+## 📌 v2.7 · 封面图与署名（🔴 必读）
+
+**封面图换了图源，`image` 结构变了，署名必须显示在图上 —— 不显示会违反 Unsplash
+API 条款、key 会被吊销，届时全部封面回退占位块。**
+
+| | 旧（v2.2） | 新（v2.7） |
+|---|---|---|
+| `image` 字段 | `type` / `url` / `credit` | 增 `provider` / `author` / `source` / `source_url` / `fallback` |
+| 图源 | Openverse 单一来源 | `unsplash → pexels → wikimedia → openverse` 多级降级 |
+| 署名 | 一行纯文本 | **「作者名」和「图源名」两个词各自是链接** |
+| 取不到图 | 无兜底 | `fallback` 渐变块，App 直接画 |
+| `image_url` | 裸字符串 | **保留**（老客户端不中断），但不含署名 |
+
+**为什么要换**
+
+Openverse 是单点，实测存在整体连不通的情况，一挂就**全线缺图**；
+Unsplash 的图库视觉质量明显更好，封面观感更接近商业产品。
+
+**三条红线（违反即违规）**
+
+1. **必须署名**：展示图片时给出摄影师与图源，并回链 —— Unsplash License 不强制，
+   但 **API Guidelines 强制**；
+2. **必须 hotlink**：只能用接口返回的 `url` 直接加载，**不能下载转存到自己的 CDN/OSS**；
+3. **不得另存分发**：不能把图片打包进 App 资源或离线包。
+
+**署名的标准渲染**
+
+```
+Photo by 作者名 on 图源名
+           └─ 链 credit_url（摄影师主页）
+                        └─ 链 source_url（图片详情页）
+```
+
+> Photo by <u>Annie Spratt</u> on <u>Unsplash</u>
+
+两个链接都已带 `utm_source` / `utm_medium`，**原样使用，不要改写**。
+
+**App 侧要做的**
+
+1. 改用 `image` 对象（不要再用 `image_url`，它拿不到署名）
+2. 作者名 → `credit_url`，图源名 → `source_url`，两处各自可点
+3. 图片加载失败 / 超时（建议 8s）→ 画 `image.fallback` 渐变块，**不要白屏**
+4. 列表页与详情页共用同一个 `image` 对象，别在详情页自行重建
+
+**上线顺序（强依赖）**
+
+```
+App 改造上线  →  后端配置 UNSPLASH_ACCESS_KEY  →  封面切到 Unsplash
+```
+
+后端没配 key 时不会产出 Unsplash 图（自动降级到 Wikimedia / Openverse / 渐变块），
+所以**可以先发 App**。反之若先开 key 而 App 还没署名，线上就是「用了图不署名」的违规状态。
+
+**后端已经替你做好的**
+
+hotlink 取图、署名文本生成、`utm` 回链拼装、选图后触发 `download_location` 计数、
+图源白名单过滤（非图库的媒体原图一律降级为占位块）。
+
+> 完整需求与验收清单见 [APP-封面图需求.md](./APP-封面图需求.md)。
 
 ---
 
