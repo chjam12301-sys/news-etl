@@ -112,10 +112,13 @@ async def _process_article(
                      article.id, len(keep))
 
     # 配图：多级图源降级（unsplash → pexels → wikimedia → openverse）。
-    # 不使用新闻原图 —— 非 CC0 有版权风险，且热链对方 CDN 易失效。
-    # 「没有图」才抓，避免重跑时把已有好图清空。
-    if force or not (article.image_url or "").strip():
-        from .images import find_image
+    # 抓取阶段已经把新闻原图写进 image_url 了，所以判断条件不能只看「有没有值」——
+    # 必须看 provider 是不是合规图源，否则媒体原图永远换不掉。
+    from .images import PROVIDER_NAMES, find_image
+
+    prov = (article.image_provider or "").strip().lower()
+    needs_image = force or not (article.image_url or "").strip() or prov not in PROVIDER_NAMES
+    if needs_image:
 
         def _clear_image() -> None:
             article.image_url = ""
