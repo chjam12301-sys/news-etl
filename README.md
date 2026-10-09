@@ -35,7 +35,9 @@ GitHub Actions（每天 05:00 北京时间）
 
 | 能力 | 实现 |
 |---|---|
-| 新闻抓取 | 21 个公开 RSS（BBC / Ars / Nature / WHO / ESPN / Guardian…），7 大主题，正文抽取 |
+| 新闻抓取 | 30 个公开 RSS（BBC 全主题 / Guardian / Ars / CNBC / ESPN / Nature…），7 大主题，正文抽取 |
+| 选题去重 | 按标题实词判重，跨源 + 跨天（同一事件被多家改写也拦得住） |
+| 选题打分 | 源权重 + 标题规则 + Google News 热度，挡掉「科研流程」类无事件标题 |
 | AI 改写 | Gemini 2.5 Flash（free 1500次/天）→ OpenRouter 免费模型 → 离线降级，三级兜底 |
 | 存储 | 本地磁盘 / Cloudflare R2 双实现，配环境变量即切换 |
 | 静态分发 | 每天自动导出 JSON（index / 按日/ 版本详情），CDN 直读 |
@@ -66,9 +68,11 @@ cp .env.example .env          # GEMINI_API_KEY 可留空（走离线降级）
 ```
 app/
   config.py      配置（全部走环境变量）
-  levels.py      10 个等级定义与改写指令
-  fetcher.py     RSS 抓取 + 正文抽取 + 去重指纹
-  rewriter.py    LLM 改写（三级 provider + 离线降级）
+  levels.py      10 个等级定义与改写指令（含段落区间 + 字数硬上限）
+  dedup.py       选题去重：标题实词集合，跨源 + 跨天
+  selector.py    选题打分：源权重 + 标题规则 + 外媒热度
+  fetcher.py     RSS 抓取 + 正文抽取 + 去重指纹 + Google News 热度信号
+  rewriter.py    LLM 改写（三级 provider + 离线降级 + 超长裁剪）
   tts.py         TTS 合成 + 逐词时间轴对齐   ← 核心
   storage.py     存储抽象：本地磁盘 / R2
   exporter.py    静态 JSON 导出（CDN 直读）
@@ -80,8 +84,69 @@ docs/
   API.md             接口文档（给 App 端）
   DEPLOY.md          部署运维（架构 / 配额 / 排查）
   防扣费清单.md两道护栏
-tests/           34 个回归测试
+tests/           138 个回归测试
 ```
+
+---
+
+## 内容质量：三道闸
+
+抓来的稿子要过三关才会进入改写。这三层都是被真实问题逼出来的：
+北极冻土写了 4 篇、Nvidia 3 篇、石油公司 3 篇，A1 产出 116~230 词（目标 110）。
+
+### ① 去重（`app/dedup.py`）
+
+源指纹只按 URL + 标题算，挡不住这些：
+
+| 情况 | 例子 |
+|---|---|
+| 源自己改了标题 | `Oil companies ask top court…` → `Oil Companies Ask Supreme Court…` |
+| 同一事件两家报 | `Former German spy chief arrested…` / `Germany arrests former spy chief…` |
+| 同一件事连报 4 天 | 北极冻土 ×4 |
+
+按**标题实词集合**判重（去停用词、去发布方后缀）：
+
+- Jaccard ≥ 0.45，或
+- 共享 ≥ 3 个实词 且 占较短标题 ≥ 40%
+
+回看窗口 60 天（`DEDUP_LOOKBACK_DAYS`）。判重发生在**抓全文之前** ——
+全文抓取是最贵的一步，先判重能省掉重复稿的网络开销。
+
+### ② 选题打分（`app/selector.py`）
+
+| 维度 | 规则 |
+|---|---|
+| 源权重 | BBC / Guardian / CNBC / ESPN 等大众编辑部 1.0；Nature / Phys.org / NIH / WHO 等学术源 0.35–0.45 |
+| 出局 | `How…` / `Why…` 解释型、勘误、评论、科研计量（`Nature Index tables`、`peer review`） |
+| 扣分 | `study` / `paper` / `researchers` −0.20；`needs` / `urges` 倡议腔 −0.15；`small` / `mistake` −0.25 |
+| 加分 | 强动词（arrests / dies / bans / launches）+0.15；人名地名 +0.12；数字金额 +0.10 |
+
+兜底分三级：合格 → 未出局但低分 → 只剩出局稿。空一天 App 就没内容，
+所以宁可出一条平庸的；但**已判出局的稿子不能被捞回来**（它分数恒为 0，
+按分数排会排到低分但可用的稿子前面）。
+
+### ③ Google News 只做热度信号
+
+`news.google.com` 的 RSS 链接是 `CBMi…` 跳转壳 —— 跟随重定向拿到的是
+Google 自己的 JS 页面（实测 593 KB，无正文），解 base64 也只得到不透明 token。
+**取不到正文，所以不能当正文源。** 只取标题，统计「有多少家外媒在报同一件事」，
+每家 +0.05（上限 +0.3）。
+
+### ④ 字数硬上限（`app/levels.py` + `rewriter.py`）
+
+只写「about N words」没用，模型稳定超出。现在每级给**段落区间 + 全局硬上限**，
+并由 `_trim_to_limit()` 逐句裁到上限内（中译同步裁，保证段落一一对应）：
+
+| 等级 | 目标 | 上限 | 段落 |
+|---|---|---|---|
+| A1 | 90 | 100 | 3–4 段 × 18–28 词 |
+| A2 | 150 | 170 | 3–4 段 × 30–50 词 |
+| B1 | 200 | 230 | 3–5 段 × 40–60 词 |
+| B2 | 250 | 290 | 3–5 段 × 50–70 词 |
+| C1 | 300 | 345 | 3–6 段 × 60–85 词 |
+
+标题另有一套新闻学规则（`HEADLINE_RULES`）：具体的事 + 谁做的 + 强动词，
+禁止 `A look at…` / `Researchers explore` / `study` 这类空泛名词。
 
 ---
 
@@ -110,11 +175,12 @@ tests/           34 个回归测试
 ## 测试
 
 ```bash
-.venv/bin/python -m pytest tests/ -q     # 34 passed
+.venv/bin/python -m pytest tests/ -q     # 138 passed
 ```
 
-覆盖：等级体系、时间轴对齐（单调/缺口/标点/坐标系契约）、LLM JSON 解析、离线降级、
-TTS 端到端、存储层（本地 + R2，含路径穿越防护）。
+覆盖：等级体系与字数硬上限、时间轴对齐（单调/缺口/标点/坐标系契约）、LLM JSON 解析、
+离线降级、选题去重（真实历史重复稿）、选题打分、TTS 端到端、
+存储层（本地 + R2，含路径穿越防护）、发布校验。
 
 
 ---

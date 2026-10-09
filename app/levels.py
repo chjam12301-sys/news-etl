@@ -17,7 +17,18 @@ class LevelSpec:
     target_words: int     # 目标词数
     sentence_hint: str    # 句子复杂度提示
     vocab_count: int = 8  # 词汇注释条数
+    # 段落与硬上限：光写「about N words」模型会超出一大截（A1 实测 116~230 词），
+    # 而旧 prompt 里「3~6 段、每段 40~120 词」的下限本身就顶到 120 词，
+    # 和目标字数自相矛盾。这里改成分级给区间，并由 rewriter 强制裁剪。
+    para_min: int = 2          # 最少段落
+    para_max: int = 4          # 最多段落
+    para_words: tuple[int, int] = (30, 60)   # 每段词数区间
+    hard_max_words: int = 0    # 0 = 取 target_words*1.15
     tags: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def max_words(self) -> int:
+        return self.hard_max_words or int(self.target_words * 1.15)
 
 
 EN_LEVELS: tuple[LevelSpec, ...] = (
@@ -32,7 +43,8 @@ EN_LEVELS: tuple[LevelSpec, ...] = (
             "Mostly simple present or simple past. No idioms, no phrasal verbs, no "
             "relative clauses."
         ),
-        target_words=110,
+        target_words=90,
+        para_min=3, para_max=4, para_words=(18, 28), hard_max_words=100,
         sentence_hint="6-12 word sentences",
         vocab_count=8,
     ),
@@ -47,6 +59,7 @@ EN_LEVELS: tuple[LevelSpec, ...] = (
             "concrete everyday nouns and common verbs."
         ),
         target_words=150,
+        para_min=3, para_max=4, para_words=(30, 50), hard_max_words=170,
         sentence_hint="up to 14 word sentences",
         vocab_count=8,
     ),
@@ -61,6 +74,7 @@ EN_LEVELS: tuple[LevelSpec, ...] = (
             "although, however. 14-20 words per sentence."
         ),
         target_words=200,
+        para_min=3, para_max=5, para_words=(40, 60), hard_max_words=230,
         sentence_hint="two-clause sentences with connectors",
         vocab_count=10,
     ),
@@ -75,6 +89,7 @@ EN_LEVELS: tuple[LevelSpec, ...] = (
             "25 words, two or three clauses each."
         ),
         target_words=250,
+        para_min=3, para_max=5, para_words=(50, 70), hard_max_words=290,
         sentence_hint="multi-clause sentences",
         vocab_count=12,
     ),
@@ -89,6 +104,7 @@ EN_LEVELS: tuple[LevelSpec, ...] = (
             "vocabulary, inversion and rhetorical structures. Do not over-simplify."
         ),
         target_words=300,
+        para_min=3, para_max=6, para_words=(60, 85), hard_max_words=345,
         sentence_hint="dense sophisticated sentences",
         vocab_count=14,
     ),
@@ -105,7 +121,8 @@ JA_LEVELS: tuple[LevelSpec, ...] = (
             "Use である / ます style, only grade-1 kanji plus hiragana, no keigo. "
             "Very short sentences of roughly 5-10 morae."
         ),
-        target_words=120,
+        target_words=100,
+        para_min=3, para_max=4, para_words=(20, 30), hard_max_words=110,
         sentence_hint="very short sentences",
         vocab_count=8,
     ),
@@ -120,6 +137,7 @@ JA_LEVELS: tuple[LevelSpec, ...] = (
             "10-18 morae."
         ),
         target_words=160,
+        para_min=3, para_max=4, para_words=(35, 55), hard_max_words=185,
         sentence_hint="short everyday sentences",
         vocab_count=10,
     ),
@@ -134,6 +152,7 @@ JA_LEVELS: tuple[LevelSpec, ...] = (
             "column."
         ),
         target_words=220,
+        para_min=3, para_max=5, para_words=(45, 65), hard_max_words=250,
         sentence_hint="short coherent paragraphs",
         vocab_count=12,
     ),
@@ -148,6 +167,7 @@ JA_LEVELS: tuple[LevelSpec, ...] = (
             "compound sentences with subordinate clauses."
         ),
         target_words=280,
+        para_min=3, para_max=6, para_words=(55, 80), hard_max_words=320,
         sentence_hint="formal written style",
         vocab_count=14,
     ),
@@ -162,6 +182,7 @@ JA_LEVELS: tuple[LevelSpec, ...] = (
             "negation, and formal written style. Preserve nuance; do not flatten it."
         ),
         target_words=340,
+        para_min=3, para_max=6, para_words=(65, 95), hard_max_words=390,
         sentence_hint="newspaper-grade prose",
         vocab_count=16,
     ),

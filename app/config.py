@@ -103,6 +103,9 @@ class Settings(BaseSettings):
     topics: str = "tech,business,science,health,sports,culture,world"
     articles_per_topic: int = 1
     request_timeout: float = 25.0
+    # 选题去重回看天数：库里最近这些天用过的标题不再复用。
+    # 太短挡不住「隔天换个说法再写一遍」，太长会把正当的后续报道也挡掉。
+    dedup_lookback_days: int = 60
     user_agent: str = (
         "Mozilla/5.0 (compatible; DailyEnglishBot/1.0; +https://example.com/bot)"
     )

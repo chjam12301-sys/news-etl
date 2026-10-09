@@ -44,6 +44,21 @@ def _count_words(text: str, lang: str) -> int:
     return len(text.split())
 
 
+def _recent_titles(db: Session, days: int) -> list[str]:
+    """库里近期已用过的标题 —— 交给抓取阶段做跨天去重。
+
+    只看 fingerprint 是不够的：同一条新闻隔天被源改了标题就是新指纹，
+    于是北极冻土写了 4 篇、Nvidia 3 篇。这里按标题实词再挡一层。
+    """
+    if days <= 0:
+        return []
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)
+    rows = db.scalars(
+        select(Article.title_original).where(Article.fetched_at >= cutoff)
+    ).all()
+    return [t for t in rows if t]
+
+
 def _upsert_article(db: Session, raw: RawArticle) -> Article | None:
     existing = db.scalar(select(Article).where(Article.fingerprint == raw.fingerprint))
     if existing:
@@ -269,7 +284,8 @@ async def run_daily(
 
     try:
         log.info("[pipe] 开始每日任务 topics=%s per_topic=%s", topics or settings.topics, per_topic or settings.articles_per_topic)
-        raws = await asyncio.to_thread(collect, topics, per_topic)
+        recent = _recent_titles(db, getattr(settings, "dedup_lookback_days", 60))
+        raws = await asyncio.to_thread(collect, topics, per_topic, recent)
         totals["fetched"] = len(raws)
         log.info("[pipe] 抓取到 %d 篇", len(raws))
 

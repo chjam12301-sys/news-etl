@@ -8,7 +8,7 @@
 
 ```
         GitHub Actions（每天北京时间 05:30 自动跑）
-  抓 21 个 RSS → DeepSeek 改写 10 等级（含中译） → edge-tts 配音+时间轴
+  抓 30 个 RSS + Google News 热度 → 去重/选题打分 → DeepSeek 改写 10 等级（含中译） → edge-tts 配音+时间轴
                 → Openverse 抓 CC0 配图
                         ↓
               Neon Postgres（元数据 + 时间轴）
@@ -255,7 +255,8 @@ const BASE = `https://cdn.jsdelivr.net/gh/${REPO}@${sha}/content`;
 | 现象 | 排查 |
 |---|---|
 | Actions 没跑 | 仓库 60 天无活动会被禁用；或看 Actions 页是否有黄色横幅 |
-| `created: 0` | RSS 去重，用 `reset=true` |
+| `created: 0` | RSS 去重或选题去重拦下了；日志搜 `[dedup]`。确要重来用 `reset=true` |
+| 某主题 0 篇 | 日志 `[fetch] 主题 X 无可用候选` —— 该主题源全挂或全被判重 |
 | 配图全是 gradient | 看日志有没有 `[img] Openverse 'x' → N 条`；N=0 说明查询词太具体 |
 | 中译为空 | 日志里 `llm=` 是否为 deepseek；若是 `offline` 说明 DeepSeek 没生效 |
 | 客户端说没时间轴 | CDN 命中旧缓存，让 App 运行时查 SHA |
@@ -273,7 +274,7 @@ cp .env.example .env# 留空也能跑（走离线降级 + 本地存储）
 
 .venv/bin/python scripts/run_full.py --force     # 完整重跑
 .venv/bin/python -m app.cli serve                # 起服务 :8000
-.venv/bin/python -m pytest tests/ -q             # 34 个测试
+.venv/bin/python -m pytest tests/ -q             # 138 个测试
 ```
 
 ⚠️ 本机网络连不上 Openverse（Cloudflare 相关域名被阻断），**配图只能在 Actions 里跑**。
@@ -285,6 +286,8 @@ cp .env.example .env# 留空也能跑（走离线降级 + 本地存储）
 | 文件 | 作用 |
 |---|---|
 | `app/pipeline.py` | 流水线编排：抓取 → 改写 → 配音 → 导出 → 提交 |
+| `app/dedup.py` | 选题去重（标题实词，跨源跨天） |
+| `app/selector.py` | 选题打分（源权重 + 标题规则 + 外媒热度） |
 | `app/tts.py` | TTS + 逐词时间轴对齐（核心） |
 | `app/rewriter.py` | DeepSeek 改写（10 等级 + 中译） |
 | `app/images.py` | Openverse CC0 配图 |

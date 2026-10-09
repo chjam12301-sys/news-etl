@@ -79,6 +79,8 @@ LANGUAGE RULES
 Keep all names, numbers, dates and places accurate to the source.
 Simplify the language, never distort the facts.
 
+{HEADLINE_RULES}
+
 OUTPUT FORMAT — return exactly this JSON shape:
 {{
   "title": "headline rewritten at this level, in {lang_name} (under 90 characters)",
@@ -98,9 +100,22 @@ ZH REQUIREMENTS
 - 翻译要自然、地道，像中文媒体写出来的，不要逐词硬译。
 
 CONSTRAINTS
-- paragraphs: 3 to 6 items, each 40-120 words.
+- paragraphs: {spec.para_min} to {spec.para_max} items, each {spec.para_words[0]}-{spec.para_words[1]} words.
+- TOTAL length: about {spec.target_words} words and NEVER more than {spec.max_words}.
+  This is a hard limit — if you have more to say, cut details, do not exceed it.
 - vocab: exactly {spec.vocab_count} items, ordered by how useful they are for this level.
 - Output raw JSON only."""
+
+HEADLINE_RULES = """\
+HEADLINE RULES (journalistic, not academic)
+- Lead with the concrete thing that happened and WHO did it: "Nvidia puts a safety
+  brain inside robots", not "A study on robotic safety systems".
+- Prefer a strong verb in simple past or present: wins, cuts, bans, launches, dies,
+  arrests, strikes, opens, breaks, agrees.
+- Put the human or well-known name first when there is one.
+- Say what CHANGES for the reader. No "How X are made", no "A look at", no
+  "Researchers explore", no vague nouns like "study / index / framework".
+- Under 90 characters, sentence case, no clickbait, no question marks."""
 
 
 # --------------------------------------------------------------------------- #
@@ -435,6 +450,79 @@ def offline_rewrite(topic: str, title: str, text: str, spec: LevelSpec) -> Rewri
 _TOKEN_RE = re.compile(r"[A-Za-z']{3,}" if False else r"[A-Za-z']{3,}|[぀-ヿ]{2,}|[一-鿿]{2,}")
 
 
+def _word_count(text: str, lang: str) -> int:
+    """英语按空白词计；日语按字符计（没有空格）。"""
+    if lang == "ja":
+        return len([c for c in text if not c.isspace()])
+    return len(re.findall(r"[A-Za-z0-9']+", text))
+
+
+def _split_sentences(text: str, lang: str) -> list[str]:
+    sep = r"(?<=[。！？])" if lang == "ja" else r"(?<=[.!?])\s+"
+    return [s.strip() for s in re.split(sep, text) if s.strip()]
+
+
+def _trim_to_limit(
+    paragraphs: list[str], zh_paras: list[str], spec: LevelSpec
+) -> tuple[list[str], list[str]]:
+    """把正文逐句裁到 spec.max_words 以内，中译同步裁。
+
+    为什么必须裁：只靠 prompt 写「about N words」没用 —— 实测 A1 产出
+    116~230 词。裁的时候按整句删，避免留下半句话；至少保留 para_min 段。
+    """
+    joiner = "" if spec.lang == "ja" else " "
+    limit = spec.max_words
+    before = sum(_word_count(p, spec.lang) for p in paragraphs)
+    if before <= limit:
+        return paragraphs, zh_paras
+
+    # 扁平化成带段落号的句子，从尾部逐句删 —— 只裁最后一段是裁不动的
+    per = [_split_sentences(p, spec.lang) or [p] for p in paragraphs]
+    flat = [(i, s) for i, ss in enumerate(per) for s in ss]
+    min_paras = min(spec.para_min, len(per))
+
+    # 优先「段落数够 + 不超长」；若做不到，则退而求其次「不超长 + 至少 1 段」
+    # —— 长度是硬指标，段数只是版式偏好。
+    best: list[str] | None = None
+    loose: list[str] | None = None
+    while flat:
+        flat.pop()
+        groups: dict[int, list[str]] = {}
+        for i, s in flat:
+            groups.setdefault(i, []).append(s)
+        rebuilt = [joiner.join(groups[i]) for i in sorted(groups) if groups[i]]
+        if not rebuilt:
+            break
+        if sum(_word_count(p, spec.lang) for p in rebuilt) > limit:
+            continue
+        if len(rebuilt) >= min_paras:
+            best = rebuilt
+            break
+        if loose is None:
+            loose = rebuilt
+
+    best = best or loose
+    if best is None:
+        best = list(paragraphs)
+
+    # 兜底：没有句读可依（整段一个长句）时按词/字硬截，保证不破硬上限
+    over = sum(_word_count(p, spec.lang) for p in best) - limit
+    if over > 0:
+        rest = sum(_word_count(p, spec.lang) for p in best[:-1])
+        room = max(limit - rest, 1)
+        last = best[-1]
+        if spec.lang == "ja":
+            best[-1] = "".join([c for c in last if not c.isspace()][:room])
+        else:
+            best[-1] = " ".join(re.findall(r"[A-Za-z0-9']+", last)[:room])
+
+    log.info("[llm] %s 超长已裁剪：%d → %d 词（段 %d → %d，上限 %d）",
+             spec.code, before,
+             sum(_word_count(p, spec.lang) for p in best),
+             len(paragraphs), len(best), limit)
+    return best, zh_paras[: len(best)] if zh_paras else []
+
+
 def _pick_vocab_words(text: str, lang: str, limit: int) -> list[str]:
     """按词频挑候选词，供 LLM 或离线模式填 vocab。"""
     from collections import Counter
@@ -518,6 +606,10 @@ async def rewrite_article(
                     data = d2
             except Exception as exc:  # noqa: BLE001
                 log.warning("[llm] %s 重试仍失败: %s", spec.code, exc)
+
+    # 硬上限裁剪：模型几乎总超出目标（A1 实测 116~230 词，而目标只有 110）。
+    # 逐句裁到上限内，中译同步裁，保证段落仍一一对应。
+    paragraphs, zh_paras = _trim_to_limit(paragraphs, zh_paras, spec)
 
     return RewriteResult(
         level_code=spec.code,
