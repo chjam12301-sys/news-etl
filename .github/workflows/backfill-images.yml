@@ -59,6 +59,16 @@ jobs:
           if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
           python scripts/backfill_images.py $ARGS
 
+      - name: 清理孤儿内容（数据库已无对应记录）
+        if: ${{ inputs.dry_run != 'true' }}
+        env:
+          STORAGE_BACKEND: github
+          GITHUB_CONTENT_REPO: ${{ github.repository }}
+          GITHUB_BRANCH: ${{ github.event.repository.default_branch }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        # 不自带 --commit：删除留在工作区，由下面的 republish 一起提交
+        run: python scripts/prune_orphans.py
+
       - name: 重新发布（刷过才发）
         if: ${{ inputs.dry_run != 'true' }}
         env:
