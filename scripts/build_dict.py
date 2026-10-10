@@ -15,7 +15,7 @@
 | 路径 | 去向 | 用途 |
 |---|---|---|
 | `dist/dict/shards/<前两字母>.json` | 上传 R2 `dict/en/<前两字母>.json` | 运行时查询接口（Worker 读它） |
-| `data/dict/ecdict-subset.json` | 提交进仓库 | 生成端构建期查表，给词条补 `phonetic` / `en` |
+| `data/dict/ecdict-subset.json` | 提交进仓库 | ECDICT 子集快照，R2 分片的内容来源（App 运行时查词用，不在生成端烘焙） |
 
 **为什么按前两个字母分片，而不是一词一对象**：两万词 = 两万次 PUT（+
 HEAD 预检就是四万次）。实测在 GitHub runner 上跑 30 分钟才传到字母 a，
@@ -26,7 +26,7 @@ Worker 一次 GET 拿到一个 shard 再本地取词，多读的只有几十 KB�
 
 `--build-only` 与 `--upload-only` 分开，workflow 里**先构建并提交索引**
 （快、必成），**再上传 R2**（慢、可重试）。这样上传即使超时，索引也已经
-落库，App 侧的构建期富化不受影响。
+落库，而 App 侧运行时直读 R2 分片，与索引是否已提交无关。
 
 ## 用法
 
@@ -40,7 +40,7 @@ Worker 一次 GET 拿到一个 shard 再本地取词，多读的只有几十 KB�
 
 App 仓库（daydaynews）里有一份等价的 Node 实现 `scripts/ecdict/build-subset.mjs`，
 用于本机试跑与规则说明。**权威产物由本脚本产出**——因为只有流水线
-（news-etl）需要拿它去富化内容，也只有流水线有 R2 密钥。
+（news-etl）需要把分片上传到 R2，也只有流水线有 R2 密钥。
 """
 from __future__ import annotations
 
@@ -222,6 +222,45 @@ def first_sense(text: str) -> str:
     return ""
 
 
+# ECDICT 的 phonetic 列是「IPA + 少量 ASCII / 西里尔替代」的混合记音：西里尔 schwa
+# 「ә」代替「ə」、ASCII 冒号「:」代替长音号「ː」、ei/ai/au/ou/əu 代替双元音
+# eɪ/aɪ/aʊ/əʊ。这里做确定性的有序替换，把能无损还原的先还原；裸 i/u 分别当作
+# /iː/ /uː/（ECDICT 用 ɪ/ʊ 字符表示 KIT/FOOT，所以裸 i/u 是 FLEECE/GOOSE）。
+# 这是 dictionaryapi.dev 拉不到时的兜底；真 IPA 优先走 ipa_cache（见 fetch_ipa.py）。
+def to_ipa(p: str) -> str:
+    if not p:
+        return ""
+    s = (p.replace("ә", "ə")
+           .replace("ei", "eɪ").replace("ai", "aɪ").replace("au", "aʊ")
+           .replace("ou", "əʊ").replace("əu", "əʊ").replace(":", "ː"))
+    s = s.replace("i", "iː").replace("u", "uː")
+    # 避免 iːː / uːː 这类重复长音号
+    s = s.replace("iːː", "iː").replace("uːː", "uː")
+    return s
+
+
+def build_from_index(index_path: Path, top_n: int = 20000) -> list[dict]:
+    """从已提交的 ecdict-subset.json 重建 picked（避免重新下载 62.9MB CSV）。
+
+    用于「只重排 / 加 IPA 字段」这类不需要重解析 CSV 的重建。读取时取 phonetic_raw
+    （若存在）作为 ECDICT 原记音，保证 IPA 字段可重复叠加而不污染源。
+    """
+    data = json.loads(Path(index_path).read_text(encoding="utf-8"))
+    out: list[dict] = []
+    for w, v in data.items():
+        raw = v.get("phonetic_raw") or v.get("phonetic") or ""
+        out.append({
+            "word": v.get("word") or w,
+            "phonetic": raw,
+            "pos": v.get("pos") or "",
+            "en": v.get("en") or "",
+            "zh": v.get("zh") or "",
+            "rank": 0,
+        })
+    out.sort(key=lambda e: e["word"])
+    return out[:top_n]
+
+
 def download_csv(dest: Path) -> Path:
     import httpx
 
@@ -337,8 +376,13 @@ def shard_of(word: str) -> str:
     return ch(0) + ch(1)
 
 
-def write_outputs(picked: list[dict], out_dir: Path, index_path: Path) -> tuple[Path, Path]:
-    """产出两样东西：分片文件（上传 R2）与单文件索引（提交进仓库）。"""
+def write_outputs(picked: list[dict], out_dir: Path, index_path: Path, ipa_cache: dict | None = None) -> tuple[Path, Path]:
+    """产出两样东西：分片文件（上传 R2）与单文件索引（提交进仓库）。
+
+    `phonetic` 优先用 dictionaryapi.dev 的真 IPA（来自 ipa_cache，见 fetch_ipa.py）；
+    拉不到的词回退到 ECDICT 记音经 `to_ipa()` 转换。`phonetic_raw` 始终保留 ECDICT
+    原值，便于追查与回滚。
+    """
     shard_dir = out_dir / "shards"
     if shard_dir.exists():
         for old in shard_dir.glob("*.json"):
@@ -348,9 +392,18 @@ def write_outputs(picked: list[dict], out_dir: Path, index_path: Path) -> tuple[
     index: dict[str, dict] = {}
     shards: dict[str, dict] = {}
     for e in picked:
-        payload = {k: e[k] for k in ("word", "phonetic", "pos", "en", "zh")}
-        # 索引与分片用同一个查找键：小写、空格转下划线
         key = e["word"].lower().replace(" ", "_")
+        raw = e.get("phonetic") or ""
+        ipa = (ipa_cache or {}).get(key) or to_ipa(raw)
+        payload = {
+            "word": e["word"],
+            "phonetic": ipa,
+            "phonetic_raw": raw,
+            "pos": e.get("pos") or "",
+            "en": e.get("en") or "",
+            "zh": e.get("zh") or "",
+        }
+        # 索引与分片用同一个查找键：小写、空格转下划线
         index[key] = payload
         shards.setdefault(shard_of(key), {})[key] = payload
 
@@ -480,6 +533,10 @@ def main() -> int:
     ap.add_argument("--index", default=str(REPO / "data" / "dict" / "ecdict-subset.json"),
                     help="单文件索引输出路径（会提交进仓库）")
     ap.add_argument("--top", type=int, default=20000, help="按词频取前 N 个词")
+    ap.add_argument("--from-index", action="store_true",
+                    help="从已提交的 ecdict-subset.json 重建（不重新下载 62.9MB CSV），用于加 IPA 字段")
+    ap.add_argument("--ipa-cache", default=str(REPO / "data" / "dict" / "ipa.json"),
+                    help="dictionaryapi.dev 真 IPA 缓存（见 scripts/fetch_ipa.py）")
     ap.add_argument("--build-only", action="store_true",
                     help="只构建，不传 R2（先落索引、后传 R2 的两段式流程用这个）")
     ap.add_argument("--upload-only", action="store_true",
@@ -495,6 +552,18 @@ def main() -> int:
 
     out_dir = Path(args.out)
     index_path = Path(args.index)
+
+    # 真 IPA 缓存（dictionaryapi.dev，见 scripts/fetch_ipa.py）；没有就全回退到
+    # ECDICT 记音经 to_ipa() 转换。缓存里查不到的词也同样回退。
+    ipa_cache: dict = {}
+    if Path(args.ipa_cache).is_file():
+        try:
+            ipa_cache = json.loads(Path(args.ipa_cache).read_text(encoding="utf-8"))
+            log.info("载入 IPA 缓存 %d 条", len(ipa_cache))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[dict] IPA 缓存读取失败 %s：%s", args.ipa_cache, exc)
+    else:
+        log.info("无 IPA 缓存（%s），音标将用 ECDICT 记音经 to_ipa() 转换", args.ipa_cache)
 
     # 两段式：先 build 落索引（快、必成），再 upload（慢、可重试）。
     # 这样即使上传超时，索引也已经提交，App 侧的富化不受影响。
@@ -514,22 +583,33 @@ def main() -> int:
             return 1
         return 0 if upload(out_dir / "shards", args.workers) else 1
 
-    if args.csv:
+    if args.from_index:
+        # 从已提交的索引重建：不重新下载 62.9MB CSV，仅叠加 IPA 字段用。
+        if not index_path.is_file():
+            log.error("--from-index 但索引不存在：%s", index_path)
+            return 1
+        log.info("从索引重建（--from-index）：%s", index_path)
+        picked = build_from_index(index_path, args.top)
+    elif args.csv:
         csv_path = Path(args.csv)
         if not csv_path.is_file():
             log.error("指定的 CSV 不存在：%s", csv_path)
             return 1
         log.info("使用指定 CSV：%s（%.1f MB）", csv_path, csv_path.stat().st_size / 1048576)
+        picked, header = build(csv_path, args.top)
+        if not picked:
+            log.error("没解析出任何词条，检查 CSV 列名：%s", ",".join(header))
+            return 1
     else:
         csv_path = REPO / "dist" / "ecdict.csv"
         if not csv_path.is_file() or csv_path.stat().st_size < ECDICT_MIN_BYTES:
             csv_path = download_csv(csv_path)
+        picked, header = build(csv_path, args.top)
+        if not picked:
+            log.error("没解析出任何词条，检查 CSV 列名：%s", ",".join(header))
+            return 1
 
-    picked, header = build(csv_path, args.top)
-    if not picked:
-        log.error("没解析出任何词条，检查 CSV 列名：%s", ",".join(header))
-        return 1
-    shard_dir, index_path = write_outputs(picked, out_dir, index_path)
+    shard_dir, index_path = write_outputs(picked, out_dir, index_path, ipa_cache)
 
     # 记账：索引指纹，便于线上核对「App 查不到的词」是不是索引太旧
     digest = hashlib.sha256(index_path.read_bytes()).hexdigest()[:12]

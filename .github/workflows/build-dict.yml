@@ -63,10 +63,16 @@ jobs:
           path: dist/ecdict.csv
           key: ecdict-csv-v1
 
+      - name: 生成 IPA 缓存（ipa-dict 离线词表）
+        # 真 IPA 来源：open-dict-data/ipa-dict（CC0，en_US 12.6 万 + en_UK 6.5 万条）。
+        # 比 dictionaryapi.dev 更稳——后者经共享出口会被限流 429，2 万词拉不动。
+        # 本步下载词表并写出 data/dict/ipa.json（phonetic 不带斜杠），供下一步查表回填。
+        run: python -m scripts.build_ipa_cache
+
       - name: 构建子集（下载 → 解析 → 分片 + 索引）
         env:
           TOP: ${{ inputs.top }}
-        run: python -m scripts.build_dict --build-only --top "${TOP:-20000}"
+        run: python -m scripts.build_dict --build-only --top "${TOP:-20000}" --ipa-cache data/dict/ipa.json
 
       - name: 校验产物
         run: |
