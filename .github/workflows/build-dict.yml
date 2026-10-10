@@ -115,21 +115,27 @@ jobs:
       - name: 抽检 R2 上的词条
         if: ${{ inputs.upload != 'false' }}
         run: |
-          set +e
-          if [ -z "${R2_PUBLIC_BASE}" ]; then echo "(未配置 R2_PUBLIC_BASE，跳过抽检)"; exit 0; fi
-          BASE="${R2_PUBLIC_BASE%/}/dict/en"
-          for w in trade economy artificial; do
-            S=$(python -c "import sys;w=sys.argv[1].lower();c=lambda ch:ch if (ch.isascii() and ch.isalnum()) else '_';print(c(w[0] if len(w)>0 else '_')+c(w[1] if len(w)>1 else '_'))" "$w")
-            printf "  %-11s shard=%-4s " "$w" "$S"
-            curl -s -o /tmp/shard.json -m 25 -w "HTTP %{http_code}  " "$BASE/$S.json"
-            python -c "
-import json,sys
-try:
-    d=json.load(open('/tmp/shard.json',encoding='utf-8'))
-    v=d.get(sys.argv[1])
-    print(v if v else '(shard 里没有这个词)')
-except Exception as e:
-    print('(读取失败)', e)
-" "$w"
-          done
-          set -e
+          python - <<'PY'
+          import json, os, urllib.request
+
+          base = (os.environ.get("R2_PUBLIC_BASE") or "").rstrip("/")
+          if not base:
+              print("(未配置 R2_PUBLIC_BASE，跳过抽检)")
+              raise SystemExit(0)
+
+          def shard_of(word):
+              def ch(i):
+                  c = word[i] if i < len(word) else "_"
+                  return c if (c.isascii() and c.isalnum()) else "_"
+              return ch(0) + ch(1)
+
+          for w in ("trade", "economy", "artificial", "regulate"):
+              url = f"{base}/dict/en/{shard_of(w)}.json"
+              try:
+                  with urllib.request.urlopen(url, timeout=25) as r:
+                      shard = json.loads(r.read().decode("utf-8"))
+                  hit = shard.get(w)
+                  print(f"  {w:11} {hit if hit else '(shard 在，但这个词不在里面)'}")
+              except Exception as exc:  # noqa: BLE001
+                  print(f"  {w:11} ✗ {type(exc).__name__}: {exc}")
+          PY
