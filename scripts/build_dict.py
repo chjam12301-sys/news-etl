@@ -67,6 +67,27 @@ POS_LABEL = {
     "aux": "aux.", "abbr": "abbr.",
 }
 
+# ECDICT 的 translation / definition 会把词性写成前缀（`n. 贸易` / `n. the exchange of...`），
+# 而它自己的 `pos` 列**实测 20000 条全是空的**（不是稀疏，就是没数据）。
+# 所以词性只能从释义前缀里取；下表把 ECDICT 的各种写法归一到 POS_LABEL 那套。
+_TAG_ALIAS = {
+    "n": "n", "v": "v", "vt": "v", "vi": "v", "aux": "aux",
+    "a": "adj", "adj": "adj", "j": "adj", "s": "adj",
+    "ad": "adv", "adv": "adv", "r": "adv",
+    "prep": "prep", "conj": "conj", "pron": "pron", "num": "num",
+    "art": "art", "int": "int", "abbr": "abbr", "pl": "n", "u": "n",
+}
+
+# 释义开头的词性标记，可有多级（如 "v. i. See Thee."）。
+# 刻意只认小写：ECDICT 的标记一律小写，写成大写的是正文里的缩写或人名首字母
+# （`A. Lincoln was...`），不能当成形容词吃掉。
+_TAG_RE = re.compile(r"^([a-z]{1,6})\.\s*")
+
+# 英文释义长度上限。实测 19756 条的分布：P50=48、P75=69、P90=96、P95=118、
+# P99=166、最长 382 字符。词汇卡按「两行最好、顶多三行」设计，一行约 45–50 字符，
+# 所以 120 字符对应三行以内，只截掉 4.5% 的长尾。
+EN_MAX_CHARS = 120
+
 # 与 App 端词名规则保持一致：小写、空格转下划线
 _HEADWORD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9'’\- .]*$")
 
@@ -122,24 +143,72 @@ def parse_csv(text: str):
 
 
 def normalize_pos(raw: str) -> str:
-    """ECDICT 的 pos 形如 "n:46/v:54"（语料占比），取占比最高者转成 n. / v.。"""
+    """ECDICT 的 `pos` 列。
+
+    两种可能形状：
+    - 语料占比 `n:46/v:54` —— 取占比最高者
+    - 单品词性 `n` / `vt` —— 直接归一
+    注意：实测 ecdict.csv 里这一列**20000 条全为空**，真正的词性在释义前缀里，
+    见 split_tag()。这里保留是为了将来上游补齐后能直接用。
+    """
+    raw = (raw or "").strip()
     if not raw:
         return ""
-    best, best_pct = "", -1.0
-    for part in str(raw).split("/"):
-        part = part.strip()
-        if not part:
-            continue
-        tag, _, pct = part.partition(":")
-        try:
-            value = float(pct)
-        except ValueError:
-            value = 0.0
-        if value > best_pct:
-            best_pct = value
-            best = tag
-    key = best.strip().lower()
-    return POS_LABEL.get(key) or (f"{best.strip().lower()}." if best.strip() else "")
+    if "/" in raw or ":" in raw:
+        best, best_pct = "", -1.0
+        for part in raw.split("/"):
+            part = part.strip()
+            if not part:
+                continue
+            tag, _, pct = part.partition(":")
+            try:
+                value = float(pct)
+            except ValueError:
+                value = 0.0
+            if value > best_pct:
+                best_pct = value
+                best = tag
+        key = best.strip().lower()
+    else:
+        key = raw.rstrip(".").strip().lower()
+    return POS_LABEL.get(_TAG_ALIAS.get(key, ""), "")
+
+
+def split_tag(text: str) -> tuple[str, str]:
+    """剥掉释义开头的词性标记，返回 (标准词性, 剩余文本)。
+
+    最多剥两级：ECDICT 里有 `v. i. See Thee.` 这种双标记，再往后就不是词性了。
+    标记不认识时立即停手，避免把 `A. Lincoln` 这类正文当成词性吃掉。
+    """
+    s = (text or "").strip()
+    tag = ""
+    for _ in range(2):
+        m = _TAG_RE.match(s)
+        if not m:
+            break
+        key = m.group(1).lower()
+        if key not in _TAG_ALIAS:
+            break
+        if not tag:
+            tag = POS_LABEL.get(_TAG_ALIAS[key], "")
+        s = s[m.end():].strip()
+    return tag, s
+
+
+def clip(text: str, limit: int = EN_MAX_CHARS) -> str:
+    """按词边界截断长文本。
+
+    只截长尾（>120 字符的英文释义占 4.5%）。故意不切在单词中间，
+    并在末尾加省略号说明「这里被截过」，不让读者以为释义本来就到这儿。
+    """
+    s = (text or "").strip()
+    if len(s) <= limit:
+        return s
+    cut = s[: limit - 1]
+    sp = cut.rfind(" ")
+    if sp > 0:
+        cut = cut[:sp]
+    return cut.rstrip(" ,;:.") + "…"
 
 
 def first_sense(text: str) -> str:
@@ -212,8 +281,17 @@ def build(csv_path: Path, top_n: int) -> tuple[list[dict], list[str]]:
             return row[i].strip() if i < len(row) else ""
 
         phonetic = cell("phonetic")
-        en = first_sense(cell("definition"))
-        zh = first_sense(cell("translation"))
+        zh_raw = first_sense(cell("translation"))
+        en_raw = first_sense(cell("definition"))
+
+        # 词性：上游 pos 列实测全空，实际藏在释义前缀里（`n. 贸易` / `n. the exchange of...`）。
+        # 剥掉前缀后，中文行与英文行都不再带 "n."，词性单独占 pos 字段。
+        zh_tag, zh_body = split_tag(zh_raw)
+        en_tag, en_body = split_tag(en_raw)
+        zh = zh_body or zh_raw
+        en = clip(en_body or en_raw)
+        pos = normalize_pos(cell("pos")) or zh_tag or en_tag
+
         if not (phonetic or en or zh):
             continue
 
@@ -229,7 +307,7 @@ def build(csv_path: Path, top_n: int) -> tuple[list[dict], list[str]]:
         rank = frq if frq > 0 else (bnc + 1e6 if bnc > 0 else float("inf"))
 
         entries.append({
-            "word": word, "phonetic": phonetic, "pos": normalize_pos(cell("pos")),
+            "word": word, "phonetic": phonetic, "pos": pos,
             "en": en, "zh": zh, "rank": rank,
         })
 
@@ -364,15 +442,30 @@ def prune_legacy(store) -> int:
         log.info("没有需要清理的旧布局对象")
         return 0
     log.info("清理 %d 个旧布局对象（示例：%s）", len(legacy), ", ".join(legacy[:3]))
-    removed = 0
-    for key in legacy:
-        try:
-            store.delete(key)
-            removed += 1
-        except Exception as exc:  # noqa: BLE001
-            log.warning("  ✗ 删除 %s 失败: %s", key, exc)
-    log.info("已清理 %d 个", removed)
+    t0 = time.time()
+
+    # 必须走批量接口：逐个 delete_object 在 runner 上约 0.4s 一次，
+    # 几千个就是几十分钟 —— 实测把一次 workflow 卡到超时。
+    delete_many = getattr(store, "delete_many", None)
+    if callable(delete_many):
+        removed = delete_many(legacy)
+    else:
+        removed = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+            for ok in pool.map(lambda k: _try_delete(store, k), legacy):
+                removed += 1 if ok else 0
+
+    log.info("已清理 %d 个，用时 %.0fs", removed, time.time() - t0)
     return removed
+
+
+def _try_delete(store, key: str) -> bool:
+    try:
+        store.delete(key)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("  ✗ 删除 %s 失败: %s", key, exc)
+        return False
 
 
 def main() -> int:

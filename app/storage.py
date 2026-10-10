@@ -413,6 +413,26 @@ class R2Storage:
     def delete(self, key: str) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=key)
 
+    def delete_many(self, keys: list[str]) -> int:
+        """批量删除，返回请求删除的 key 数。
+
+        S3/R2 的 delete_objects 单次上限 1000 个 key。逐个 delete_object 在
+        runner 上约 0.4s 一次，几千个就是几十分钟（实测把一次 workflow 卡死），
+        所以清理类操作必须走批量接口。
+        """
+        removed = 0
+        for i in range(0, len(keys), 1000):
+            batch = keys[i : i + 1000]
+            try:
+                self.client.delete_objects(
+                    Bucket=self.bucket,
+                    Delete={"Objects": [{"Key": k} for k in batch], "Quiet": True},
+                )
+                removed += len(batch)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("[r2] 批量删除 %d 个 key 失败: %s", len(batch), exc)
+        return removed
+
     def list_keys(self, prefix: str = "") -> list[str]:
         out: list[str] = []
         token: str | None = None
