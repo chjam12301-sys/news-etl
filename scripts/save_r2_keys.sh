@@ -3,14 +3,13 @@
 # 之后所有命令都自动读取，不用反复粘贴。
 #
 # 用法：直接回车即可 —— 会提示你去哪里复制。
-set -euo pipefail
+set -eo pipefail
 cd "$(dirname "$0")/.."
 
-ENV_FILE=".env"
+ENV_FILE="${ENV_FILE:-.env}"
 
-if [ -f "$ENV_FILE" ]; then
-  echo "已存在 $ENV_FILE，将更新 R2 相关项。"
-else
+# 若 .env 不存在则创建（不覆盖已有内容）
+if [ ! -f "$ENV_FILE" ]; then
   : > "$ENV_FILE"
   echo ".env" >> .gitignore 2>/dev/null || true
 fi
@@ -20,7 +19,7 @@ set_key() {
   # 删掉旧行，再追加
   grep -v "^${key}=" "$ENV_FILE" > "$ENV_FILE.tmp" 2>/dev/null || true
   mv "$ENV_FILE.tmp" "$ENV_FILE"
-  echo "${key}=${val}" >> "$ENV_FILE"
+  printf '%s=%s\n' "$key" "$val" >> "$ENV_FILE"
 }
 
 echo
@@ -30,7 +29,7 @@ echo "================================================================"
 echo
 echo " 打开：https://dash.cloudflare.com → 左侧 R2 →"
 echo "      Manage R2 API Tokens（或 Account Details → API Tokens）"
-echo "      点Create API Token"
+echo "      点 Create API Token"
 echo "        权限      : Object Read & Write"
 echo "        指定 bucket: 只勾 news-etl-audio"
 echo "      创建后会显示两串字符（Secret 只显示这一次）"
@@ -42,7 +41,7 @@ echo
 read -rsp "  R2_SECRET_ACCESS_KEY（不回显）: " SK
 echo
 
-if [ -z "$AK" ] || [ -z "$SK" ]; then
+if [ -z "${AK:-}" ] || [ -z "${SK:-}" ]; then
   echo "未输入完整，已取消。"
   exit 1
 fi
@@ -60,6 +59,5 @@ echo
 echo "✓ 已保存到 .env（权限 600，已 gitignore）"
 echo "  以后跑任何命令都不用再输入密钥了。"
 echo
-echo "  下一步执行："
-echo "    .venv/bin/python scripts/backfill_audio.py"
-echo
+echo "  下一步执行上传："
+echo "    .venv/bin/python -m scripts.build_dict --upload-only --prune-legacy --workers 8"
