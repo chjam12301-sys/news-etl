@@ -273,30 +273,35 @@ def upload(en_dir: Path, workers: int, force: bool) -> int:
     done = ok = skipped = 0
     failures: list[str] = []
 
-    def one(p: Path) -> tuple[bool, bool]:
+    def one(p: Path) -> tuple[str, str]:
+        """返回 (状态, 说明)。状态 ∈ ok / skipped / fail —— 单个词条失败不中断整批。"""
         key = f"dict/en/{p.name}"
-        if not force and store.exists(key):
-            return True, True
-        store.put(key, p.read_bytes(), content_type="application/json")
-        return store.exists(key), False
+        try:
+            if not force and store.exists(key):
+                return "skipped", p.name
+            store.put(key, p.read_bytes(), content_type="application/json")
+            if not store.exists(key):
+                return "fail", f"{p.name}: 上传后探测不到"
+            return "ok", p.name
+        except Exception as exc:  # noqa: BLE001
+            return "fail", f"{p.name}: {exc}"
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        for good, was_skipped in pool.map(one, files):
+        for status, detail in pool.map(one, files):
             done += 1
-            if was_skipped:
-                skipped += 1
-                ok += 1
-            elif good:
-                ok += 1
+            if status == "fail":
+                failures.append(detail)
             else:
-                failures.append(files[done - 1].name)
+                ok += 1
+                if status == "skipped":
+                    skipped += 1
             if done % 2000 == 0:
                 log.info("  ...%d/%d（%.0fs）", done, len(files), time.time() - t0)
 
     log.info("上传完成：成功 %d（其中已存在跳过 %d），失败 %d，用时 %.0fs",
              ok, skipped, len(failures), time.time() - t0)
-    for name in failures[:10]:
-        log.warning("  ✗ %s", name)
+    for line in failures[:10]:
+        log.warning("  ✗ %s", line)
     return ok
 
 
