@@ -373,7 +373,7 @@ def write_outputs(picked: list[dict], out_dir: Path, index_path: Path) -> tuple[
 # --------------------------------------------------------------------------- #
 # 上传 R2
 # --------------------------------------------------------------------------- #
-def upload(shard_dir: Path, workers: int, force: bool) -> int:
+def upload(shard_dir: Path, workers: int) -> int:
     from app.dict import get_dict_storage
 
     store = get_dict_storage()
@@ -389,36 +389,38 @@ def upload(shard_dir: Path, workers: int, force: bool) -> int:
     log.info("上传 %d 个分片（共 %.1f MB）到 %s，并发 %d",
              len(files), total_mb, store.name, workers)
     t0 = time.time()
-    done = ok = skipped = 0
+    done = ok = 0
     failures: list[str] = []
 
-    def one(p: Path) -> tuple[str, str]:
-        """返回 (状态, 说明)。状态 ∈ ok / skipped / fail —— 单个分片失败不中断整批。"""
+    def one(p: Path) -> tuple[bool, str]:
+        """无条件覆盖写。
+
+        **不用「已存在就跳过」**：分片名恰好两个字符，会和早期「一词一对象」
+        布局里的两字母词（in / on / at / to …）撞名。撞上时 exists() 返回真，
+        真正的分片就永远写不进去，线上读到的是那个单词的旧对象 —— 实测踩过：
+        45 个两字母分片全被跳过，dict/en/in.json 里躺着单词 in 的旧对象。
+        PUT 本身是幂等的，277 个分片全量重写只要 32 秒，不值得为省这点时间冒风险。
+        """
         key = f"dict/en/{p.name}"
         try:
-            if not force and store.exists(key):
-                return "skipped", p.name
             store.put(key, p.read_bytes(), content_type="application/json")
             if not store.exists(key):
-                return "fail", f"{p.name}: 上传后探测不到"
-            return "ok", p.name
+                return False, f"{p.name}: 上传后探测不到"
+            return True, p.name
         except Exception as exc:  # noqa: BLE001
-            return "fail", f"{p.name}: {exc}"
+            return False, f"{p.name}: {exc}"
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        for status, detail in pool.map(one, files):
+        for good, detail in pool.map(one, files):
             done += 1
-            if status == "fail":
-                failures.append(detail)
-            else:
+            if good:
                 ok += 1
-                if status == "skipped":
-                    skipped += 1
+            else:
+                failures.append(detail)
             if done % 100 == 0:
                 log.info("  ...%d/%d（%.0fs）", done, len(files), time.time() - t0)
 
-    log.info("上传完成：成功 %d（其中已存在跳过 %d），失败 %d，用时 %.0fs",
-             ok, skipped, len(failures), time.time() - t0)
+    log.info("上传完成：成功 %d，失败 %d，用时 %.0fs", ok, len(failures), time.time() - t0)
     for line in failures[:10]:
         log.warning("  ✗ %s", line)
     return ok
@@ -482,7 +484,6 @@ def main() -> int:
                     help="只构建，不传 R2（先落索引、后传 R2 的两段式流程用这个）")
     ap.add_argument("--upload-only", action="store_true",
                     help="跳过下载与解析，只把 --out 里已有的分片传上去")
-    ap.add_argument("--force", action="store_true", help="已存在的对象也重传")
     ap.add_argument("--prune-legacy", action="store_true",
                     help="清掉早期「一词一对象」布局残留的 key（保留两字符的 shard）")
     ap.add_argument("--workers", type=int, default=8, help="上传并发数")
@@ -511,7 +512,7 @@ def main() -> int:
         if not files:
             log.error("没有分片可传：%s", out_dir / "shards")
             return 1
-        return 0 if upload(out_dir / "shards", args.workers, args.force) else 1
+        return 0 if upload(out_dir / "shards", args.workers) else 1
 
     if args.csv:
         csv_path = Path(args.csv)
@@ -538,7 +539,7 @@ def main() -> int:
         log.info("--build-only：跳过 R2 上传")
         return 0
 
-    return 0 if upload(shard_dir, args.workers, args.force) else 1
+    return 0 if upload(shard_dir, args.workers) else 1
 
 
 if __name__ == "__main__":

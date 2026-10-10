@@ -132,7 +132,10 @@ jobs:
           for w in ("trade", "economy", "artificial", "regulate"):
               url = f"{base}/dict/en/{shard_of(w)}.json"
               try:
-                  with urllib.request.urlopen(url, timeout=25) as r:
+                  # r2.dev 会把 Python-urllib 的 UA 当爬虫直接 403（curl 却放行），
+                  # 必须显式带一个正常 UA，否则抽检永远"失败"、掩盖真实问题。
+                  req = urllib.request.Request(url, headers={"User-Agent": "day-dict-probe/1.0"})
+                  with urllib.request.urlopen(req, timeout=25) as r:
                       shard = json.loads(r.read().decode("utf-8"))
                   hit = shard.get(w)
                   print(f"  {w:11} {hit if hit else '(shard 在，但这个词不在里面)'}")

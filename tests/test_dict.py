@@ -155,9 +155,21 @@ def test_content_pos_mapping(raw, expected):
 
 
 def test_get_dictionary_uses_repo_index():
-    """仓库里必须真的带上索引 —— 没有它，生成的词条就没有音标与英文释义。"""
+    """仓库里必须真的带上索引 —— 没有它，生成的词条就没有音标与英文释义。
+
+    注意是直接 Dictionary.load()，不能走 get_dictionary()：本文件的 autouse
+    fixture 已经把单例换成了 9 词的小索引，走单例只会读到那份桩数据。
+    """
     p = Path(__file__).resolve().parent.parent / "data" / "dict" / "ecdict-subset.json"
     if not p.is_file():
         pytest.skip("索引尚未生成（先在 CI 跑一次「构建词库」workflow）")
-    dic = get_dictionary()
+    dic = Dictionary.load(p)
     assert dic is not None and len(dic) > 1000
+    # 抽查几个高频词，确认音标、英文释义、词性都真的落在里面
+    for word in ("trade", "economy", "artificial", "regulate"):
+        hit = dic.lookup(word)
+        assert hit is not None, f"{word} 应该收录在索引里"
+        assert hit["phonetic"], f"{word} 缺音标"
+        assert hit["en"], f"{word} 缺英文释义"
+        assert hit["pos"], f"{word} 缺词性"
+        assert len(hit["en"]) <= 121, f"{word} 的英文释义没被截到两行以内"
