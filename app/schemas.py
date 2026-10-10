@@ -12,6 +12,10 @@ class VocabWord(BaseModel):
     pos: str = ""
     zh: str = ""
     note: str = ""
+    # 下面两项由构建期查 ECDICT 填（见 app/dict.py）—— LLM 不产音标与英文释义。
+    # App 端对空值有保护：空则整行不渲染。
+    phonetic: str = ""
+    en: str = ""
 
 
 class WordTimingOut(BaseModel):

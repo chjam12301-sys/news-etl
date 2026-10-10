@@ -338,12 +338,18 @@ def _as_list(value: Any) -> list[str]:
 
 
 def _as_vocab(value: Any, lang: str, limit: int) -> list[dict[str, Any]]:
+    """规范化 LLM 返回的词表。
+
+    `phonetic` / `en` 一般不来自 LLM（prompt 里没有这两项），留出槽位是为了
+    万一模型自发给到时不被丢掉；真正的来源是构建期查 ECDICT（app/dict.py）。
+    """
     out: list[dict[str, Any]] = []
     if not isinstance(value, list):
         return out
     for item in value[:limit]:
         if isinstance(item, str):
-            out.append({"word": item, "pos": "", "zh": "", "note": ""})
+            out.append({"word": item, "pos": "", "zh": "", "note": "",
+                        "phonetic": "", "en": ""})
             continue
         if not isinstance(item, dict):
             continue
@@ -356,6 +362,8 @@ def _as_vocab(value: Any, lang: str, limit: int) -> list[dict[str, Any]]:
                 "pos": str(item.get("pos") or "").strip(),
                 "zh": str(item.get("zh") or item.get("chinese") or "").strip(),
                 "note": str(item.get("note") or "").strip(),
+                "phonetic": str(item.get("phonetic") or item.get("ipa") or "").strip(),
+                "en": str(item.get("en") or "").strip(),
             }
         )
     return out
@@ -430,7 +438,8 @@ def offline_rewrite(topic: str, title: str, text: str, spec: LevelSpec) -> Rewri
         out_paras = [title]
 
     vocab = [
-        {"word": w, "pos": "", "zh": "", "note": "offline 模式未生成释义"}
+        {"word": w, "pos": "", "zh": "", "note": "offline 模式未生成释义",
+         "phonetic": "", "en": ""}
         for w in _pick_vocab_words(" ".join(out_paras), spec.lang, spec.vocab_count)
     ]
     lead = out_paras[0].split(".")[0][:120] + "."

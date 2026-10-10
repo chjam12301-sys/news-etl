@@ -1,0 +1,106 @@
+name: 构建词库（ECDICT 高频子集）
+
+# 只在需要时手动跑，不挂定时任务：
+# 词库是存量数据，不像新闻每天都要新的。真到「App 查不到某个词」时再重跑。
+#
+# 产物两处：
+#   1. R2  dict/en/<word>.json        运行时查询接口读它
+#   2. Git data/dict/ecdict-subset.json  生成端构建期查它，补音标与英文释义
+on:
+  workflow_dispatch:
+    inputs:
+      top:
+        description: '取词数量（按词频排序取前 N）'
+        required: false
+        default: '20000'
+      upload:
+        description: '是否上传 R2（false = 只构建，验证解析用）'
+        required: false
+        default: 'true'
+
+concurrency:
+  group: build-dict
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    permissions:
+      contents: write          # 提交 data/dict/ecdict-subset.json
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 缓存 ECDICT 全量 CSV
+        # 62.9MB，别每次都重下。key 固定：上游文件是词库快照，不会天天变。
+        # 想强制重下就把 key 的版本号从 v1 往上加。
+        uses: actions/cache@v4
+        with:
+          path: dist/ecdict.csv
+          key: ecdict-csv-v1
+
+      - name: 构建子集
+        env:
+          TOP: ${{ inputs.top }}
+          # 词条对象与音频共用同一组 R2 密钥，key 前缀不同（dict/en/ 与 audio/）
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
+        run: |
+          set -e
+          ARGS="--top ${TOP:-20000}"
+          if [ "${{ inputs.upload }}" = "false" ]; then
+            ARGS="$ARGS --no-upload"
+            echo "跳过上传：只验证构建"
+          fi
+          python -m scripts.build_dict $ARGS
+
+      - name: 校验产物
+        run: |
+          set +e
+          echo "--- 单词文件 ---"
+          echo "dist/dict/en: $(find dist/dict/en -name '*.json' 2>/dev/null | wc -l | tr -d ' ') 个"
+          echo "--- 索引 ---"
+          ls -lh data/dict/ecdict-subset.json 2>/dev/null || echo "(索引缺失)"
+          python - <<'PY'
+          import json, pathlib
+          p = pathlib.Path("data/dict/ecdict-subset.json")
+          if not p.is_file():
+              print("  ✗ 索引不存在"); raise SystemExit(0)
+          d = json.loads(p.read_text(encoding="utf-8"))
+          print(f"  词数 {len(d)}")
+          for w in ("trade", "economy", "artificial", "regulate"):
+              v = d.get(w)
+              print(f"  {w:12} {v}" if v else f"  {w:12} (未收录)")
+          miss = sum(1 for v in d.values() if not v.get("en"))
+          print(f"  缺英文释义 {miss} 条（{miss/max(len(d),1)*100:.1f}%）")
+          PY
+          set -e
+
+      - name: 提交索引
+        if: ${{ inputs.upload != 'false' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f data/dict/ecdict-subset.json
+          if git diff --cached --quiet; then
+            echo "索引无变化，跳过提交"
+            exit 0
+          fi
+          git commit -m "dict: 更新词库索引（$(python -c "import json;print(len(json.load(open('data/dict/ecdict-subset.json',encoding='utf-8'))))") 词）"
+          git push

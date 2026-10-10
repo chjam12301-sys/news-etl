@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .config import settings
 from .db import Article, ArticleVersion, AudioAsset, JobRun, SessionLocal, init_db
+from .dict import enrich_vocab
 from .fetcher import RawArticle, collect
 from .levels import ALL_LEVELS
 from .rewriter import get_llm, rewrite_all
@@ -160,6 +161,8 @@ async def _process_article(
 
     for r in results:
         body = r.body
+        # 词表富化：LLM 只给 word/pos/zh/note，音标与英文释义来自离线词库
+        # （ECDICT 高频子集，见 app/dict.py）。查不到就保持为空，App 端不渲染空行。
         version = ArticleVersion(
             article_id=article.id,
             level_code=r.level_code,
@@ -171,7 +174,7 @@ async def _process_article(
             paragraphs=r.paragraphs,
             word_count=_count_words(body, r.lang),
             reading_minutes=_reading_minutes(body, r.lang),
-            vocab=r.vocab,
+            vocab=enrich_vocab(r.vocab, r.lang),
             lead=r.lead,
             title_zh=r.title_zh,
             lead_zh=r.lead_zh,

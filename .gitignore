@@ -13,5 +13,13 @@ data/
 app/data/
 !data/.gitkeep.env
 
+# 例外：词库索引必须入库 —— 生成端每次跑流水线都要拿它补音标/英文释义，
+# 从网络取会让「内容生成」多一个可失败的依赖。体积约 2–3MB，只在重下词库时变。
+!data/dict/
+!data/dict/ecdict-subset.json
+
+# 词库中间产物：62.9MB 的 ecdict.csv 与两万个单词文件（后者上传 R2，不入库）
+dist/
+
 # 音频不入库：jsDelivr 单仓库 50MB 上限，音频由对象存储提供
 content/audio/
