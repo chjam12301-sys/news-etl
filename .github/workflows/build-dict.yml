@@ -4,8 +4,11 @@ name: 构建词库（ECDICT 高频子集）
 # 词库是存量数据，不像新闻每天都要新的。真到「App 查不到某个词」时再重跑。
 #
 # 产物两处：
-#   1. R2  dict/en/<word>.json        运行时查询接口读它
-#   2. Git data/dict/ecdict-subset.json  生成端构建期查它，补音标与英文释义
+#   1. Git  data/dict/ecdict-subset.json   生成端构建期查它，补音标与英文释义
+#   2. R2   dict/en/<前两字母>.json         运行时查询接口读它
+#
+# 刻意排成「先落索引、再传 R2」：索引是 App 立刻要用的（快、必成），
+# 上传 R2 只服务将来的查词接口（慢、可重跑）。上传万一超时，索引也已经提交。
 on:
   workflow_dispatch:
     inputs:
@@ -14,7 +17,7 @@ on:
         required: false
         default: '20000'
       upload:
-        description: '是否上传 R2（false = 只构建，验证解析用）'
+        description: '是否上传 R2（false = 只构建并提交索引）'
         required: false
         default: 'true'
 
@@ -25,10 +28,18 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 40
 
     permissions:
       contents: write          # 提交 data/dict/ecdict-subset.json
+
+    env:
+      # 词条与音频共用同一组 R2 密钥，key 前缀不同（dict/en/ 与 audio/）
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
 
     steps:
       - uses: actions/checkout@v4
@@ -52,29 +63,17 @@ jobs:
           path: dist/ecdict.csv
           key: ecdict-csv-v1
 
-      - name: 构建子集
+      - name: 构建子集（下载 → 解析 → 分片 + 索引）
         env:
           TOP: ${{ inputs.top }}
-          # 词条对象与音频共用同一组 R2 密钥，key 前缀不同（dict/en/ 与 audio/）
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
-        run: |
-          set -e
-          ARGS="--top ${TOP:-20000}"
-          if [ "${{ inputs.upload }}" = "false" ]; then
-            ARGS="$ARGS --no-upload"
-            echo "跳过上传：只验证构建"
-          fi
-          python -m scripts.build_dict $ARGS
+        run: python -m scripts.build_dict --build-only --top "${TOP:-20000}"
 
       - name: 校验产物
         run: |
           set +e
-          echo "--- 单词文件 ---"
-          echo "dist/dict/en: $(find dist/dict/en -name '*.json' 2>/dev/null | wc -l | tr -d ' ') 个"
+          echo "--- 分片 ---"
+          echo "dist/dict/shards: $(find dist/dict/shards -name '*.json' 2>/dev/null | wc -l | tr -d ' ') 个"
+          du -sh dist/dict/shards 2>/dev/null
           echo "--- 索引 ---"
           ls -lh data/dict/ecdict-subset.json 2>/dev/null || echo "(索引缺失)"
           python - <<'PY'
@@ -87,13 +86,15 @@ jobs:
           for w in ("trade", "economy", "artificial", "regulate"):
               v = d.get(w)
               print(f"  {w:12} {v}" if v else f"  {w:12} (未收录)")
-          miss = sum(1 for v in d.values() if not v.get("en"))
-          print(f"  缺英文释义 {miss} 条（{miss/max(len(d),1)*100:.1f}%）")
+          miss_en = sum(1 for v in d.values() if not v.get("en"))
+          miss_ph = sum(1 for v in d.values() if not v.get("phonetic"))
+          print(f"  缺英文释义 {miss_en} 条（{miss_en/max(len(d),1)*100:.1f}%）")
+          print(f"  缺音标     {miss_ph} 条（{miss_ph/max(len(d),1)*100:.1f}%）")
           PY
           set -e
 
       - name: 提交索引
-        if: ${{ inputs.upload != 'false' }}
+        # 放在上传之前：这一步是 App 侧要用的成果，不能因为上传慢/失败而丢掉
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -102,5 +103,33 @@ jobs:
             echo "索引无变化，跳过提交"
             exit 0
           fi
-          git commit -m "dict: 更新词库索引（$(python -c "import json;print(len(json.load(open('data/dict/ecdict-subset.json',encoding='utf-8'))))") 词）"
+          COUNT=$(python -c "import json;print(len(json.load(open('data/dict/ecdict-subset.json',encoding='utf-8'))))")
+          git commit -m "dict: 更新词库索引（${COUNT} 词）"
+          git pull --rebase origin "${GITHUB_REF_NAME}" || true
           git push
+
+      - name: 上传分片到 R2
+        if: ${{ inputs.upload != 'false' }}
+        run: python -m scripts.build_dict --upload-only --prune-legacy --workers 8
+
+      - name: 抽检 R2 上的词条
+        if: ${{ inputs.upload != 'false' }}
+        run: |
+          set +e
+          if [ -z "${R2_PUBLIC_BASE}" ]; then echo "(未配置 R2_PUBLIC_BASE，跳过抽检)"; exit 0; fi
+          BASE="${R2_PUBLIC_BASE%/}/dict/en"
+          for w in trade economy artificial; do
+            S=$(python -c "import sys;w=sys.argv[1].lower();c=lambda ch:ch if (ch.isascii() and ch.isalnum()) else '_';print(c(w[0] if len(w)>0 else '_')+c(w[1] if len(w)>1 else '_'))" "$w")
+            printf "  %-11s shard=%-4s " "$w" "$S"
+            curl -s -o /tmp/shard.json -m 25 -w "HTTP %{http_code}  " "$BASE/$S.json"
+            python -c "
+import json,sys
+try:
+    d=json.load(open('/tmp/shard.json',encoding='utf-8'))
+    v=d.get(sys.argv[1])
+    print(v if v else '(shard 里没有这个词)')
+except Exception as e:
+    print('(读取失败)', e)
+" "$w"
+          done
+          set -e

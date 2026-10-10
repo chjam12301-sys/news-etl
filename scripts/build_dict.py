@@ -14,24 +14,33 @@
 
 | 路径 | 去向 | 用途 |
 |---|---|---|
-| `dist/dict/en/<word>.json` | 上传 R2 `dict/en/<word>.json` | 运行时查询接口（Worker 读它） |
+| `dist/dict/shards/<前两字母>.json` | 上传 R2 `dict/en/<前两字母>.json` | 运行时查询接口（Worker 读它） |
 | `data/dict/ecdict-subset.json` | 提交进仓库 | 生成端构建期查表，给词条补 `phonetic` / `en` |
 
-两份内容一致，只是形状不同：一份一词一对象（适合按 key 取），
-一份单文件索引（适合一次下载、本地查表）。
+**为什么按前两个字母分片，而不是一词一对象**：两万词 = 两万次 PUT（+
+HEAD 预检就是四万次）。实测在 GitHub runner 上跑 30 分钟才传到字母 a，
+CI 的 45 分钟上限根本跑不完。分片后对象数降到几百个，时间从小时级到分钟级。
+Worker 一次 GET 拿到一个 shard 再本地取词，多读的只有几十 KB。
+
+## 两段式执行
+
+`--build-only` 与 `--upload-only` 分开，workflow 里**先构建并提交索引**
+（快、必成），**再上传 R2**（慢、可重试）。这样上传即使超时，索引也已经
+落库，App 侧的构建期富化不受影响。
 
 ## 用法
 
-    python -m scripts.build_dict                     # 构建 + 上传 + 落索引
-    python -m scripts.build_dict --no-upload         # 只构建（本机无密钥时）
+    python -m scripts.build_dict --build-only        # 下载 + 解析 + 落索引与分片
+    python -m scripts.build_dict --upload-only       # 只传分片到 R2
+    python -m scripts.build_dict                     # 两步一起（本机调试用）
     python -m scripts.build_dict --top 20000
-    python -m scripts.build_dict --csv /tmp/ecdict.csv --out /tmp/dicttest --no-upload
+    python -m scripts.build_dict --csv /tmp/ecdict.mini.csv --build-only --index /tmp/i.json
 
 ## 与 App 仓库的关系
 
 App 仓库（daydaynews）里有一份等价的 Node 实现 `scripts/ecdict/build-subset.mjs`，
 用于本机试跑与规则说明。**权威产物由本脚本产出**——因为只有流水线
-（news-etl）需要拿它去富化内容。
+（news-etl）需要拿它去富化内容，也只有流水线有 R2 密钥。
 """
 from __future__ import annotations
 
@@ -230,36 +239,63 @@ def build(csv_path: Path, top_n: int) -> tuple[list[dict], list[str]]:
     return picked, header
 
 
+def shard_of(word: str) -> str:
+    """词条分片键 = 后两字符归一化后的前两个字符。
+
+    **为什么分片而不是一词一对象**：一词一对象意味着两万次 PUT（外加一次 HEAD
+    预检就是四万次），实测跑 30 分钟才传到字母 a，CI 的 45 分钟上限根本跑不完。
+    把同一前缀的词打进一个 shard，对象数降到几百个，上传时间从小时级降到分钟级。
+    Worker 侧一次 GET 拿到 shard 再本地取词，代价是多读几 KB。
+
+    归一化规则必须与 Worker（workers/dict-api/src/index.mjs）完全一致：
+    非 [a-z0-9] 的字符（`'`、`-`、空格等）一律映射成 `_`，不足两位补 `_`。
+    """
+    w = (word or "").lower()
+
+    def ch(i: int) -> str:
+        c = w[i] if i < len(w) else "_"
+        return c if ("a" <= c <= "z" or "0" <= c <= "9") else "_"
+
+    return ch(0) + ch(1)
+
+
 def write_outputs(picked: list[dict], out_dir: Path, index_path: Path) -> tuple[Path, Path]:
-    en_dir = out_dir / "en"
-    if en_dir.exists():
-        for old in en_dir.glob("*.json"):
+    """产出两样东西：分片文件（上传 R2）与单文件索引（提交进仓库）。"""
+    shard_dir = out_dir / "shards"
+    if shard_dir.exists():
+        for old in shard_dir.glob("*.json"):
             old.unlink()
-    en_dir.mkdir(parents=True, exist_ok=True)
+    shard_dir.mkdir(parents=True, exist_ok=True)
 
     index: dict[str, dict] = {}
+    shards: dict[str, dict] = {}
     for e in picked:
         payload = {k: e[k] for k in ("word", "phonetic", "pos", "en", "zh")}
+        # 索引与分片用同一个查找键：小写、空格转下划线
         key = e["word"].lower().replace(" ", "_")
         index[key] = payload
-        (en_dir / f"{key}.json").write_bytes(
-            json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        shards.setdefault(shard_of(key), {})[key] = payload
+
+    for name, bucket in shards.items():
+        (shard_dir / f"{name}.json").write_bytes(
+            json.dumps(bucket, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         )
 
     index_path.parent.mkdir(parents=True, exist_ok=True)
     blob = json.dumps(index, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     index_path.write_bytes(blob)
+    biggest = max((len(v) for v in shards.values()), default=0)
     log.info(
-        "写出 %d 个单词文件 → %s；索引 %s（%.2f MB）",
-        len(index), en_dir, index_path, len(blob) / 1048576,
+        "写出 %d 词 → %d 个分片（%s）；索引 %s（%.2f MB）；最大分片 %d 词",
+        len(index), len(shards), shard_dir, index_path, len(blob) / 1048576, biggest,
     )
-    return en_dir, index_path
+    return shard_dir, index_path
 
 
 # --------------------------------------------------------------------------- #
 # 上传 R2
 # --------------------------------------------------------------------------- #
-def upload(en_dir: Path, workers: int, force: bool) -> int:
+def upload(shard_dir: Path, workers: int, force: bool) -> int:
     from app.dict import get_dict_storage
 
     store = get_dict_storage()
@@ -267,14 +303,19 @@ def upload(en_dir: Path, workers: int, force: bool) -> int:
         log.error("未配置 R2（R2_BUCKET / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_ENDPOINT）")
         return 0
 
-    files = sorted(en_dir.glob("*.json"))
-    log.info("上传 %d 个词条到 %s，并发 %d", len(files), store.name, workers)
+    files = sorted(shard_dir.glob("*.json"))
+    if not files:
+        log.error("没有分片可传：%s", shard_dir)
+        return 0
+    total_mb = sum(f.stat().st_size for f in files) / 1048576
+    log.info("上传 %d 个分片（共 %.1f MB）到 %s，并发 %d",
+             len(files), total_mb, store.name, workers)
     t0 = time.time()
     done = ok = skipped = 0
     failures: list[str] = []
 
     def one(p: Path) -> tuple[str, str]:
-        """返回 (状态, 说明)。状态 ∈ ok / skipped / fail —— 单个词条失败不中断整批。"""
+        """返回 (状态, 说明)。状态 ∈ ok / skipped / fail —— 单个分片失败不中断整批。"""
         key = f"dict/en/{p.name}"
         try:
             if not force and store.exists(key):
@@ -295,7 +336,7 @@ def upload(en_dir: Path, workers: int, force: bool) -> int:
                 ok += 1
                 if status == "skipped":
                     skipped += 1
-            if done % 2000 == 0:
+            if done % 100 == 0:
                 log.info("  ...%d/%d（%.0fs）", done, len(files), time.time() - t0)
 
     log.info("上传完成：成功 %d（其中已存在跳过 %d），失败 %d，用时 %.0fs",
@@ -305,20 +346,79 @@ def upload(en_dir: Path, workers: int, force: bool) -> int:
     return ok
 
 
+def prune_legacy(store) -> int:
+    """清掉早期「一词一对象」布局残留的 key。
+
+    第一版是一词一个对象（`dict/en/trade.json`），在 runner 上实测约 0.4s/次往返，
+    两万词连 HEAD 预检要半小时以上，跑不完，已改为分片（`dict/en/tr.json`）。
+    旧对象没人再读，但会干扰排查（"这个 trade.json 为什么还在"），顺手清掉。
+
+    判定规则很精确：shard 的文件名**恰好两个字符**，其余都是旧布局。
+    """
+    keys = [k for k in store.list_keys("dict/en/") if k.endswith(".json")]
+    legacy = [
+        k for k in keys
+        if len(k.rsplit("/", 1)[-1][: -len(".json")]) != 2
+    ]
+    if not legacy:
+        log.info("没有需要清理的旧布局对象")
+        return 0
+    log.info("清理 %d 个旧布局对象（示例：%s）", len(legacy), ", ".join(legacy[:3]))
+    removed = 0
+    for key in legacy:
+        try:
+            store.delete(key)
+            removed += 1
+        except Exception as exc:  # noqa: BLE001
+            log.warning("  ✗ 删除 %s 失败: %s", key, exc)
+    log.info("已清理 %d 个", removed)
+    return removed
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     ap = argparse.ArgumentParser(description="构建 ECDICT 高频子集并上线 R2")
     ap.add_argument("--csv", default=None,
                     help="全量 ecdict.csv 路径。不传则用 dist/ecdict.csv，"
                          "缺失或不足 50MB 时自动下载（显式传入的路径按原样使用，不校验完整性）")
-    ap.add_argument("--out", default=str(REPO / "dist" / "dict"), help="单词文件输出目录")
+    ap.add_argument("--out", default=str(REPO / "dist" / "dict"), help="分片输出目录")
     ap.add_argument("--index", default=str(REPO / "data" / "dict" / "ecdict-subset.json"),
                     help="单文件索引输出路径（会提交进仓库）")
     ap.add_argument("--top", type=int, default=20000, help="按词频取前 N 个词")
-    ap.add_argument("--no-upload", action="store_true", help="只构建，不传 R2")
+    ap.add_argument("--build-only", action="store_true",
+                    help="只构建，不传 R2（先落索引、后传 R2 的两段式流程用这个）")
+    ap.add_argument("--upload-only", action="store_true",
+                    help="跳过下载与解析，只把 --out 里已有的分片传上去")
     ap.add_argument("--force", action="store_true", help="已存在的对象也重传")
+    ap.add_argument("--prune-legacy", action="store_true",
+                    help="清掉早期「一词一对象」布局残留的 key（保留两字符的 shard）")
     ap.add_argument("--workers", type=int, default=8, help="上传并发数")
     args = ap.parse_args()
+
+    if args.build_only and args.upload_only:
+        log.error("--build-only 与 --upload-only 不能同时用")
+        return 2
+
+    out_dir = Path(args.out)
+    index_path = Path(args.index)
+
+    # 两段式：先 build 落索引（快、必成），再 upload（慢、可重试）。
+    # 这样即使上传超时，索引也已经提交，App 侧的富化不受影响。
+    if args.upload_only:
+        from app.dict import get_dict_storage
+
+        store = get_dict_storage()
+        if store is None:
+            log.error("未配置 R2（R2_BUCKET / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_ENDPOINT）")
+            return 1
+        if args.prune_legacy:
+            prune_legacy(store)
+        log.info("--upload-only：跳过构建，直接上传 %s", out_dir / "shards")
+        files = sorted((out_dir / "shards").glob("*.json"))
+        if not files:
+            log.error("没有分片可传：%s", out_dir / "shards")
+            return 1
+        return 0 if upload(out_dir / "shards", args.workers, args.force) else 1
 
     if args.csv:
         csv_path = Path(args.csv)
@@ -335,20 +435,17 @@ def main() -> int:
     if not picked:
         log.error("没解析出任何词条，检查 CSV 列名：%s", ",".join(header))
         return 1
-    en_dir, index_path = write_outputs(picked, Path(args.out), Path(args.index))
-
-    if args.no_upload:
-        log.info("--no-upload：跳过 R2 上传")
-        return 0
-
-    uploaded = upload(en_dir, args.workers, args.force)
-    if uploaded == 0:
-        return 1
+    shard_dir, index_path = write_outputs(picked, out_dir, index_path)
 
     # 记账：索引指纹，便于线上核对「App 查不到的词」是不是索引太旧
     digest = hashlib.sha256(index_path.read_bytes()).hexdigest()[:12]
     log.info("索引指纹 %s，共 %d 词", digest, len(picked))
-    return 0
+
+    if args.build_only:
+        log.info("--build-only：跳过 R2 上传")
+        return 0
+
+    return 0 if upload(shard_dir, args.workers, args.force) else 1
 
 
 if __name__ == "__main__":
