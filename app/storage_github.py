@@ -32,6 +32,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
+
+import httpx
 
 from .storage import StoredObject
 
@@ -168,7 +171,7 @@ class GitHubStorage:
                 return True
         return False
 
-    def refresh_latest_pointer(self, ref: str = "") -> None:
+    def refresh_latest_pointer(self, ref: str = "") -> dict[str, Any]:
         """重写 content/latest.json（两个路径都写），使其指向含本次内容的 commit。
 
         `ref` 传本次内容提交后的 SHA。因为紧接着还要为 latest.json 本身
@@ -179,7 +182,7 @@ class GitHubStorage:
 
         ref = ref or self.current_ref()
         if not ref:
-            return
+            return {"status": "skipped", "reason": "missing_ref"}
 
         # 自检：ref 必须真的含有最新的 index.json，否则 App 按此拉取会拿到旧内容。
         # （若因提交顺序错位而指错，这里能立刻发现并纠正。）
@@ -224,6 +227,43 @@ class GitHubStorage:
             log.info("[gh] latest.json 已指向 @%s", ref)
         else:
             log.info("[gh] latest.json 无变化，仍指向 @%s", ref)
+
+        # Alias URLs can remain stale despite query parameters; invalidate only the two mutable pointers.
+        visibility = self._purge_latest_pointers()
+        return {"ref": ref, "pointer_published": True, "cdn_visibility": visibility}
+
+    def _purge_latest_pointers(self) -> dict[str, Any]:
+        items: list[dict[str, Any]] = []
+        repo = quote(self.repo, safe="/")
+        branch = quote(self.branch, safe="")
+        for key in ("latest.json", "data/latest.json"):
+            path = f"/gh/{repo}@{branch}/{CONTENT_DIR}/{key}"
+            item: dict[str, Any] = {"path": path, "ok": False}
+            try:
+                response = httpx.get(f"https://purge.jsdelivr.net{path}", timeout=10,
+                                     follow_redirects=False)
+                response.raise_for_status()
+                result = response.json()
+                details = result.get("paths", {}).get(path, {})
+                providers = details.get("providers", {})
+                item["ok"] = (result.get("status") == "finished"
+                              and details.get("throttled") is False
+                              and isinstance(providers, dict) and bool(providers)
+                              and all(value is True for value in providers.values()))
+                if not item["ok"]:
+                    item["error"] = "purge_not_finished_or_throttled"
+            except Exception as exc:
+                # Exception strings can include request metadata; record only the bounded error category.
+                item["error"] = type(exc).__name__
+            items.append(item)
+            if item["ok"]:
+                log.info("[gh] CDN pointer cache purge completed: %s", path)
+            else:
+                log.warning("[gh] Pointer is published but CDN visibility is unconfirmed; "
+                            "retry purge %s (%s)", path, item.get("error"))
+        return {"status": "purged" if all(item["ok"] for item in items) else "retry_needed",
+                "items": items}
+
 
     # ---- Storage 协议 --------------------------------------------------- #
     def put(self, key: str, data: bytes, *, content_type: str | None = None) -> StoredObject:

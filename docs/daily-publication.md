@@ -27,3 +27,9 @@ python scripts/republish.py --repair-fetched-day 2026-10-12 --release-date 2026-
 ```
 
 对应 `republish.yml` inputs 为 `dry`、`repair_fetched_day`、`release_date`、`expected_ids`。dry 不初始化数据库、不写日期、不发布、不预热。执行版修复后走原四阶段发布；若发布失败，重跑相同参数仍安全。今天保留七篇历史产物，只为排序最早的一篇预热，其余由 App 按需生成。
+
+## 发布指针的 CDN 可见性
+
+指针推送成功后，自动对 jsDelivr 的 `content/latest.json` 与 `content/data/latest.json` 两个可变路径清缓存。每个请求最多等待 10 秒，不跟随重定向；只有响应 `finished`、未限流且各 provider 全部成功，才记录 purge 完成。失败会明确输出“指针已发布但 CDN 可见性未确认”，返回 `retry_needed`，不会撤销已发布内容。重新发布可安全重试这两个清缓存请求。仅清可变指针，不清固定 SHA 详情/索引/音频。
+
+参考：[jsDelivr 官方清缓存说明](https://www.jsdelivr.com/tools/purge)。清缓存操作完成不等于所有网络节点立刻可见，发布联调应再读取 CDN 指针确认目标 ref。

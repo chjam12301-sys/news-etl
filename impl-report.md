@@ -38,3 +38,11 @@
 
 ## 建议后续处理（不在本次 plan 范围）
 - 无。
+
+## 追加实施：发布指针 CDN 缓存（2026-10-12）
+- 主会话以 GitHub 指针已更新、CDN query 仍读旧 ref 的真实结果追加授权：`app/storage_github.py::refresh_latest_pointer` 在 push 后清理两个实际指针 URL 缓存。
+- `app/storage_github.py` — 每路径 10 秒超时、固定 purge 域、禁止重定向、核对 finished/throttled/providers；失败只输出错误类别与重试提示，保持已发布指针。
+- `tests/test_pointer_purge.py` — 成功、超时、HTTP 失败、限流、provider 失败、畸形响应、push 失败不 purge、无变更重试。
+- `tests/test_daily_publish.py` — 追加日期迁移后 root 可达归档 version 唯一测试；未改生产日期导出逻辑。
+- `docs/daily-publication.md` — CDN 可见性与重试说明。
+- 追加验证：`.venv/bin/python -m pytest tests/test_pointer_purge.py tests/test_daily_publish.py tests/test_publish.py tests/test_audio_store.py -q` → 48 passed；storage_github compileall 与 diff-check → PASS。

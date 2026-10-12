@@ -273,3 +273,37 @@ async def test_warmup_mismatched_manifest_never_submits(sessions, monkeypatch):
         add_versions(db, article)
         result = await voice_warmup.warmup_article(db, article.id, transport=httpx.MockTransport(handle))
     assert result["accepted"] == 0 and result["failed"] == 20
+
+
+def test_date_move_has_no_duplicates_in_reachable_daily_indexes(sessions, monkeypatch, tmp_path):
+    import json
+    from app import exporter, publish
+    from app.storage import LocalStorage, day_index_key, index_key
+
+    storage = LocalStorage(tmp_path / "content")
+    storage.repo_dir = str(tmp_path)
+    storage.commit = lambda message: None
+    monkeypatch.setattr(exporter, "get_storage", lambda: storage)
+    monkeypatch.setattr(exporter.settings, "public_base_url", "")
+    with sessions() as db:
+        moved = add_article(db, dt.date(2026, 10, 9), "Moved story")
+        add_versions(db, moved, {"en_a1"})
+        moved_version = db.scalar(select(ArticleVersion.id).where(ArticleVersion.article_id == moved.id))
+        exporter.export_day(db, dt.date(2026, 10, 9))
+        for day in (10, 11):
+            article = add_article(db, dt.date(2026, 10, day), f"Other story {day}")
+            add_versions(db, article, {"en_a1"})
+        moved.published_date = dt.date(2026, 10, 12)
+        db.commit()
+        result = publish.publish_all(db=db, storage=storage, topics_days=3)
+        assert result["ok"]
+    root = json.loads(storage.read(index_key()))
+    assert root["dates"] == ["2026-10-12", "2026-10-11", "2026-10-10"]
+    ids = []
+    for date in root["dates"]:
+        daily = json.loads(storage.read(day_index_key(date)))
+        ids.extend(item["version_id"] for levels in daily["versions"].values()
+                   for items in levels.values() for item in items)
+    assert len(ids) == len(set(ids))
+    assert ids.count(moved_version) == 1
+    assert storage.exists(day_index_key("2026-10-09"))
