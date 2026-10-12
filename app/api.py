@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from .config import settings
+from .audio_store import is_playable_audio
 from .db import Article, ArticleVersion, AudioAsset, JobRun, get_db, init_db
 from .levels import ALL_LEVELS, EN_LEVELS, JA_LEVELS
 from .schemas import (
@@ -280,7 +281,7 @@ def article_levels(article_id: int, db: Session = Depends(get_db)) -> list[Level
 # --------------------------------------------------------------------------- #
 def _audio_out(v: ArticleVersion) -> AudioOut | None:
     a = v.audio
-    if not a:
+    if not is_playable_audio(a):
         return None
     # 有公开地址就用它（CDN 直出），否则回落到自建接口
     url = a.public_url if (a.public_url and a.public_url.startswith("http")) else f"/api/v1/audio/{a.id}.mp3"
@@ -316,7 +317,7 @@ def serve_audio(audio_id: int, db: Session = Depends(get_db), download: bool = F
     - 否则从存储读取并支持 Range（播放器拖进度条必需）
     """
     a = db.get(AudioAsset, audio_id)
-    if not a:
+    if not is_playable_audio(a):
         raise HTTPException(404, "音频不存在")
 
     # 1) 已有公开 URL → 交给 CDN
@@ -368,11 +369,21 @@ def static_version(version_id: int):
 
 
 @app.get("/files/{key:path}", tags=["static"], summary="本地存储模式下的音频直读")
-def local_files(key: str):
+def local_files(key: str, db: Session = Depends(get_db)):
     """仅本地模式用：把本地存储里的对象暴露出去，行为与 CDN 一致。"""
-    from .storage import get_storage
+    from .storage import LocalStorage, get_storage
 
     st = get_storage()
+    if isinstance(st, LocalStorage):
+        # 判定和读取共用存储路径映射，历史数据库 key 的别名也不能绕过过滤。
+        path = st._p(key)
+        assets = db.scalars(select(AudioAsset).where(AudioAsset.engine == "silent-fallback"))
+        blocked = any(st._p(asset.file_path or "") == path for asset in assets)
+    else:
+        assets = db.scalars(select(AudioAsset).where(AudioAsset.file_path == key))
+        blocked = any(not is_playable_audio(asset) for asset in assets)
+    if blocked:
+        raise HTTPException(404, "音频不存在")
     data = st.read(key)
     if not data:
         raise HTTPException(404, "not found")
@@ -414,7 +425,7 @@ def version_timeline(
     )
     if not v:
         raise HTTPException(404, "version 不存在")
-    if not v.audio:
+    if not is_playable_audio(v.audio):
         raise HTTPException(404, "该版本尚未生成音频")
     a = v.audio
     words = [WordTimingOut(**t) for t in (a.timeline or [])]
@@ -445,7 +456,7 @@ def version_srt(version_id: int, db: Session = Depends(get_db)) -> Response:
     v = db.scalar(
         select(ArticleVersion).options(selectinload(ArticleVersion.audio)).where(ArticleVersion.id == version_id)
     )
-    if not v or not v.audio:
+    if not v or not is_playable_audio(v.audio):
         raise HTTPException(404, "该版本尚未生成音频")
     timings = [WordTiming(**_to_kw(t)) for t in (v.audio.timeline or [])]
     return Response(to_srt(timings), media_type="application/x-subrip")

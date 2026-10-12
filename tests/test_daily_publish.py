@@ -307,3 +307,53 @@ def test_date_move_has_no_duplicates_in_reachable_daily_indexes(sessions, monkey
     assert len(ids) == len(set(ids))
     assert ids.count(moved_version) == 1
     assert storage.exists(day_index_key("2026-10-09"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_silent", [False, True])
+async def test_audio_failure_stops_daily_before_export(sessions, monkeypatch, legacy_silent):
+    from app import exporter, publish, storage_guard
+    from app.tts import TTSResult
+    with sessions() as db:
+        article = add_article(db)
+        article.image_provider = "unsplash"
+        article.image_url = "https://example.test/image"
+        add_versions(db, article)
+        versions = list(db.scalars(select(ArticleVersion).order_by(ArticleVersion.id)))
+        for v in versions[2:]:
+            db.add(AudioAsset(version_id=v.id, lang=v.lang, voice="aria", file_path="old.mp3",
+                              duration_ms=1000, size_bytes=10, engine="edge-tts"))
+        if legacy_silent:
+            db.add(AudioAsset(version_id=versions[0].id, lang="en", voice="aria",
+                              file_path="old.wav", duration_ms=1000, size_bytes=10,
+                              engine="silent-fallback"))
+        failed_id, good_id = versions[0].id, versions[1].id
+        db.commit()
+    synth = AsyncMock(side_effect=([TTSResult(b"ID3real", 1)] if legacy_silent else
+                                  [RuntimeError("refused"), TTSResult(b"ID3real", 1)]))
+    storage = SimpleNamespace(put=Mock(return_value=SimpleNamespace(url="https://example.test/audio")))
+    monkeypatch.setattr(pipeline, "SessionLocal", sessions)
+    monkeypatch.setattr(pipeline, "init_db", lambda: None)
+    monkeypatch.setattr(pipeline, "synthesize", synth)
+    monkeypatch.setattr(pipeline.settings, "tts_enabled", True)
+    monkeypatch.setattr(pipeline, "get_audio_storage", lambda: storage)
+    monkeypatch.setattr(storage_guard, "check_capacity", lambda: None)
+    forbidden = Mock(side_effect=AssertionError("publication must not start"))
+    monkeypatch.setattr(exporter, "export_all", forbidden)
+    monkeypatch.setattr(publish, "publish_all", forbidden)
+    warmup = AsyncMock(side_effect=AssertionError("must not warm up"))
+    monkeypatch.setattr(voice_warmup, "warmup_article", warmup)
+    result = await pipeline.run_daily()
+    assert result["status"] == "failed"
+    assert result["stats"]["audio_errors"] == 1
+    assert result["stats"]["audios"] == 1
+    assert storage.put.call_count == 1
+    assert synth.await_count == (1 if legacy_silent else 2)
+    forbidden.assert_not_called()
+    warmup.assert_not_called()
+    with sessions() as db:
+        assert len(list(db.scalars(select(ArticleVersion)))) == 10
+        assert db.scalar(select(Article)).tts_status == "partial"
+        failed = db.get(ArticleVersion, failed_id)
+        assert (failed.audio.engine == "silent-fallback") if legacy_silent else failed.audio is None
+        assert db.get(ArticleVersion, good_id).audio.engine == "edge-tts"

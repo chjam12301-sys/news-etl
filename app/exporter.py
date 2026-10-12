@@ -23,7 +23,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from .audio_store import public_audio_url
+from .audio_store import public_audio_url, is_playable_audio
 from .config import settings
 from .db import Article, ArticleVersion
 from .storage import (
@@ -44,7 +44,7 @@ INDEX_SHORT_KEY = "index.json"
 
 def _audio_meta(v: ArticleVersion, base: str, rev: str = "") -> dict[str, Any] | None:
     a = v.audio
-    if not a:
+    if not is_playable_audio(a):
         return None
     # 音频托管在对象存储：URL 与 commit 无关，永久稳定（内容更新由
     # content_hash 驱动，不靠换 URL）。只有未配置对象存储时才退回 CDN 路径。
@@ -123,7 +123,7 @@ def _version_summary(v: ArticleVersion, a: Article, base: str, rev: str = "") ->
 
     return {
         # App 用它判断是否需要重新下载：相同 → 读本地；不同 → 下载
-        "content_hash": v.content_hash or from_version(v, v.audio),
+        "content_hash": (v.content_hash if v.audio is None or is_playable_audio(v.audio) else "") or from_version(v, v.audio),
         "version_id": v.id,
         "article_id": v.article_id,
         "level_code": v.level_code,
@@ -145,7 +145,7 @@ def _version_summary(v: ArticleVersion, a: Article, base: str, rev: str = "") ->
         "lead_zh": v.lead_zh or "",
         "preview": (v.paragraphs[0] if v.paragraphs else "")[:140],
         "preview_zh": (v.paragraphs_zh[0][:140] if v.paragraphs_zh else ""),
-        "has_audio": v.audio is not None,
+        "has_audio": is_playable_audio(v.audio),
         "audio": _audio_meta(v, base, rev),
         # 详情地址，App 按需拉取
         "detail_url": (
@@ -177,7 +177,7 @@ def _version_detail(v: ArticleVersion, a: Article, base: str, rev: str = "") -> 
             "summary_original": a.summary_original,
             "body_original": a.body_original,
             "fetched_at": a.fetched_at.isoformat() if a.fetched_at else None,
-            "timeline": (v.audio.timeline if v.audio else []) or [],
+            "timeline": (v.audio.timeline if is_playable_audio(v.audio) else []) or [],
             "created_at": v.created_at.isoformat() if v.created_at else None,
         }
     )

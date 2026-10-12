@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from .audio_store import is_playable_audio
+
 
 class VocabWord(BaseModel):
     word: str
@@ -83,7 +85,7 @@ class ArticleSummaryOut(BaseModel):
         from .exporter import _image_meta   # 与静态 JSON 共用同一套配图逻辑
 
         audio = None
-        if v.audio is not None:
+        if is_playable_audio(v.audio):
             audio = AudioOut(
                 url=f"/api/v1/audio/{v.audio.id}.mp3",
                 duration=v.audio.duration_ms / 1000,

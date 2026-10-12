@@ -16,7 +16,7 @@ from .db import Article, ArticleVersion, AudioAsset, JobRun, SessionLocal, init_
 from .fetcher import RawArticle, collect
 from .levels import ALL_LEVELS
 from .rewriter import get_llm, rewrite_all
-from .audio_store import get_audio_storage, public_audio_url
+from .audio_store import get_audio_storage, public_audio_url, is_playable_audio
 from .storage import audio_key, get_storage
 from .tts import synthesize
 
@@ -192,6 +192,8 @@ async def _process_article(
         ):
             # 保留的版本仍需补音频（它们可能只是译文完整但没配音）
             if version.audio is not None:
+                if not is_playable_audio(version.audio):
+                    stats["audio_errors"] += 1
                 continue
             try:
                 res = await synthesize(version.body, version.lang)

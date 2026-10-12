@@ -204,32 +204,56 @@ def test_offline_low_level_is_shorter():
 
 
 # --------------------------------------------------------------------------- #
-# 端到端（需要网络；失败不阻塞）
+# 合成入口（确定性离线流）
 # --------------------------------------------------------------------------- #
+@pytest.fixture
+def edge_stream(monkeypatch):
+    import edge_tts
+    from app.tts import settings
+    monkeypatch.setattr(settings, "tts_enabled", True)
+
+    class Communicate:
+        def __init__(self, text, voice, **kwargs):
+            self.text = text
+
+        async def stream(self):
+            yield {"type": "audio", "data": b"ID3fixture"}
+            for i, word in enumerate(self.text.split()):
+                yield {"type": "WordBoundary", "text": word,
+                       "offset": i * TICKS_PER_SECOND, "duration": TICKS_PER_SECOND // 2}
+
+    monkeypatch.setattr(edge_tts, "Communicate", Communicate)
+
+
 @pytest.mark.asyncio
-async def test_synthesize_produces_valid_timeline():
-    try:
-        res = await synthesize("Scientists found a new frog in the Amazon.", "en")
-    except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"TTS 不可用: {exc}")
-
-    assert res.audio_bytes, "音频为空"
-    assert res.timings, "时间轴为空"
-    assert res.duration > 0
-
+@pytest.mark.parametrize("text,lang", [("Scientists found a new frog.", "en"),
+                                      ("科学者は新しい力を見つけました。", "ja")])
+async def test_synthesize_produces_valid_timeline(edge_stream, text, lang):
+    res = await synthesize(text, lang)
+    assert res.audio_bytes == b"ID3fixture"
+    assert res.engine == "edge-tts"
+    assert res.duration > 0 and res.timings
     cursor = 0
     for t in res.timings:
         assert t.end_ms >= t.start_ms
-        assert t.char_start >= cursor, "字符区间未单调递增"
+        assert t.char_start >= cursor
         assert t.char_end > t.char_start
         cursor = t.char_end
 
 
 @pytest.mark.asyncio
-async def test_synthesize_japanese():
-    try:
-        res = await synthesize("科学者は新しい力を見つけました。", "ja")
-    except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"TTS 不可用: {exc}")
-    assert res.timings
-    assert res.engine in {"edge-tts", "silent-fallback"}
+@pytest.mark.parametrize("case", ["empty_text", "disabled", "upstream", "empty_audio"])
+async def test_synthesize_rejects_failure(monkeypatch, case):
+    from app import tts
+    from unittest.mock import AsyncMock
+    source_error = RuntimeError("upstream refused")
+    edge = AsyncMock(side_effect=source_error if case == "upstream" else None,
+                     return_value=tts.TTSResult(b"", 0))
+    monkeypatch.setattr(tts, "_synth_edge", edge)
+    monkeypatch.setattr(tts.settings, "tts_enabled", case != "disabled")
+    with pytest.raises((ValueError, RuntimeError)) as result:
+        await synthesize(" " if case == "empty_text" else "Hello.", "en")
+    if case in {"empty_text", "disabled"}:
+        edge.assert_not_called()
+    if case == "upstream":
+        assert result.value.__cause__ is source_error

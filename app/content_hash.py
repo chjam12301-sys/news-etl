@@ -135,8 +135,10 @@ def compute_content_hash(
 
 def from_version(v, audio=None) -> str:
     """从 ArticleVersion (+ AudioAsset) 计算。音频为空时也可算。"""
+    from .audio_store import is_playable_audio
+
     au = None
-    if audio is not None:
+    if is_playable_audio(audio):
         au = audio_fingerprint(
             duration_ms=audio.duration_ms or 0,
             size_bytes=audio.size_bytes or 0,

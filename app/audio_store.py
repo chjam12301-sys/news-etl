@@ -34,6 +34,11 @@ log = logging.getLogger(__name__)
 _AUDIO_KEY_RE = re.compile(r"^audio/\d+/[A-Za-z0-9_-]+\.(mp3|wav|m4a)$")
 
 
+def is_playable_audio(audio: Any | None) -> bool:
+    """历史静音占位保留在库中，但不能作为可播放资产对外提供。"""
+    return audio is not None and audio.engine != "silent-fallback"
+
+
 class _LocalAudioStorage(LocalStorage):
     """本地兜底（仅开发用）。配了 public base 就拼绝对地址，否则给相对路径。"""
 

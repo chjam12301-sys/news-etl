@@ -3,7 +3,7 @@
 edge-tts 免费、无需鉴权，且流式返回 WordBoundary 事件（offset/duration 单位为
 100ns），正好满足 App 端「跟读高亮 / 单词点击定位」的需求。
 
-同时保留一个本地静音兜底（按词长估算时长），保证离线/CI 环境也能产出结构完整数据。
+合成失败明确抛错，不能把静音占位当作成功音频。
 """
 from __future__ import annotations
 
@@ -291,48 +291,20 @@ async def _synth_edge(text: str, voice: str) -> TTSResult:
     )
 
 
-def _synth_silent(text: str, voice: str, lang: str) -> TTSResult:
-    """兜底：生成极短静音 WAV + 按词长估算的时间轴，保证 schema 一致。"""
-    import struct
-
-    spoken = normalize_for_tts(text)
-    tokens = _tokenize(spoken, lang)
-    rate = 0.22 if lang == "ja" else 0.28
-    timings: list[WordTiming] = []
-    t = 0.0
-    for tok, cs, ce in tokens:
-        est = max(0.14, min(0.9, len(tok) * rate))
-        timings.append(
-            WordTiming(
-                index=len(timings), text=tok,
-                start=round(t, 3), end=round(t + est, 3),
-                start_ms=int(t * 1000), end_ms=int((t + est) * 1000),
-                char_start=cs, char_end=ce,
-            )
-        )
-        t += est
-    duration = round(t, 3)
-    # 8kHz 单声道 8bit WAV
-    rate_hz, n = 8000, max(1, int(duration * rate_hz))
-    header = b"RIFF" + struct.pack("<I", 36 + n) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 1, 1, rate_hz, rate_hz, 1, 8) + b"data" + struct.pack("<I", n)
-    return TTSResult(audio_bytes=header + bytes(n), duration=duration, timings=timings, engine="silent-fallback", voice=voice)
-
-
 async def synthesize(text: str, lang: str, voice: str | None = None) -> TTSResult:
-    """合成音频 + 逐词时间轴。edge-tts 失败自动降级为静音占位。"""
+    """合成音频和时间轴；失败时由调用方保留缺失状态。"""
     voice = voice or _pick_voice(lang)
     if not text.strip():
-        return _synth_silent("", voice, lang)
+        raise ValueError("TTS text is empty")
     if not settings.tts_enabled:
-        return _synth_silent(text, voice, lang)
+        raise RuntimeError("TTS is disabled")
     try:
         res = await asyncio.wait_for(_synth_edge(text, voice), timeout=180)
-        if not res.audio_bytes:
-            raise RuntimeError("空音频")
-        return res
-    except Exception as exc:  # noqa: BLE001
-        log.warning("[tts] edge-tts 失败(%s)，使用静音兜底: %s", exc, voice)
-        return _synth_silent(text, voice, lang)
+    except Exception as exc:
+        raise RuntimeError(f"TTS synthesis failed ({type(exc).__name__})") from exc
+    if not res.audio_bytes:
+        raise RuntimeError("TTS returned empty audio")
+    return res
 
 
 # --------------------------------------------------------------------------- #
