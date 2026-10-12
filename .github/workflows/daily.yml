@@ -9,16 +9,12 @@ on:
       topics:
         description: '主题（逗号分隔，留空=全部 7 个）'
         required: false
-      per_topic:
-        description: '每个主题几篇'
-        required: false
-        default: '1'
       force:
-        description: '强制重建（加中文译文或改 prompt 后用）'
+        description: '仅补当天目标缺失译文；不新增文章'
         required: false
-        default: 'true'
-      reset:
-        description: '清空数据库后重跑（RSS 去重导致抓不到新文章时用）'
+        default: 'false'
+      warmup_only:
+        description: '只补今日已有文章的四种音色，不生成/发布文章'
         required: false
         default: 'false'
 
@@ -38,7 +34,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0# 完整历史，便于取 commit SHA 做 CDN cache-buster
+          fetch-depth: 0 # 完整历史，便于取 commit SHA 做 CDN cache-buster
           persist-credentials: true
 
       - uses: actions/setup-python@v5
@@ -76,14 +72,13 @@ jobs:
         id: args
         env:
           IN_TOPICS: ${{ inputs.topics }}
-          IN_PER_TOPIC: ${{ inputs.per_topic }}
           IN_FORCE: ${{ inputs.force }}
-          IN_RESET: ${{ inputs.reset }}
+          IN_WARMUP_ONLY: ${{ inputs.warmup_only }}
         run: |
-          ARGS="daily --per-topic ${IN_PER_TOPIC:-1}"
+          ARGS="daily"
           if [ -n "${IN_TOPICS}" ]; then ARGS="$ARGS --topics ${IN_TOPICS}"; fi
           if [ "${IN_FORCE}" = "true" ]; then ARGS="$ARGS --force"; fi
-          if [ "${IN_RESET}" = "true" ]; then ARGS="$ARGS --reset"; fi
+          if [ "${IN_WARMUP_ONLY}" = "true" ]; then ARGS="$ARGS --warmup-only"; fi
           echo "args=$ARGS" >> "$GITHUB_OUTPUT"
           echo "将要执行: python -m app.cli $ARGS"
 
@@ -115,6 +110,7 @@ jobs:
           DEEPSEEK_MODEL: deepseek-chat
 
           # TTS
+          VOICE_WARMUP_TOKEN: ${{ secrets.VOICE_WARMUP_TOKEN }}
           TTS_ENABLED: "true"
           TTS_VOICE_EN: en-US-AriaNeural
           TTS_VOICE_JA: ja-JP-NanamiNeural

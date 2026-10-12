@@ -25,9 +25,8 @@ def main() -> int:
     d.add_argument("--topics", help="逗号分隔，如 tech,science")
     d.add_argument("--per-topic", type=int, default=1)
     d.add_argument("--no-tts", action="store_true")
-    d.add_argument("--force", action="store_true", help="忽略已有结果重新生成")
-    d.add_argument("--reset", action="store_true",
-                   help="清空数据库后重跑（RSS 去重导致抓不到新文章时用）")
+    d.add_argument("--force", action="store_true", help="仅补当前发行日缺失译文，不新增文章")
+    d.add_argument("--warmup-only", action="store_true", help="只补今日已有文章的可选音色")
 
     sub.add_parser("serve", help="启动 API 服务")
 
@@ -42,7 +41,7 @@ def main() -> int:
                 per_topic=a.per_topic,
                 with_tts=not a.no_tts,
                 force=a.force,
-                reset_all=a.reset,
+                warmup_only=a.warmup_only,
             )
         )
         print(json.dumps(res, ensure_ascii=False, indent=2))

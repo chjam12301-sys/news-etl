@@ -316,6 +316,7 @@ def collect(
     topics: list[str] | None = None,
     per_topic: int | None = None,
     recent_titles: list[str] | None = None,
+    total_limit: int | None = None,
 ) -> list[RawArticle]:
     """按主题各取 N 篇。
 
@@ -346,6 +347,8 @@ def collect(
     with httpx.Client(timeout=settings.request_timeout, headers=headers) as client:
         signals = fetch_signals(client, topics)
 
+        global_candidates: list[RawArticle] = []
+        global_heats: dict[str, int] = {}
         for topic in topics:
             feeds = FEEDS_BY_TOPIC.get(topic) or []
             sigs = signals.get(topic, [])
@@ -374,6 +377,10 @@ def collect(
                 continue
 
             heats = {c.title: _heat_of(content_tokens(c.title), sigs) for c in candidates}
+            if total_limit is not None:
+                global_candidates.extend(candidates)
+                global_heats.update(heats)
+                continue
             picked, _scored = select(candidates, per_topic, heats)
 
             got = 0
@@ -393,4 +400,21 @@ def collect(
                 result.append(raw)
                 got += 1
             log.info("[fetch] 主题 %s 得到 %d 篇（候选 %d）", topic, got, len(candidates))
+        if total_limit is not None:
+            from .selector import rank
+
+            seen_urls: set[str] = set()
+            for scored in rank(global_candidates, global_heats):
+                if len(result) >= total_limit:
+                    break
+                raw = scored.raw
+                url = _normalize_url(raw.source_url)
+                if url in seen_urls or index.find(raw.title):
+                    continue
+                seen_urls.add(url)
+                raw.body = fetch_full_text(raw, client)
+                if len(raw.body or raw.summary) < 400:
+                    continue
+                index.add(raw.title)
+                result.append(raw)
     return result

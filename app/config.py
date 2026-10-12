@@ -38,6 +38,9 @@ class Settings(BaseSettings):
 
     # ---- TTS -----------------------------------------------------------
     # edge-tts 免费无鉴权，原生返回逐词时间戳
+    voice_worker_url: str = "https://day-voice-api.innertalkdiary.workers.dev"
+    voice_warmup_token: str = ""
+
     tts_enabled: bool = True
     tts_voice_en: str = "en-US-AriaNeural"
     tts_voice_ja: str = "ja-JP-NanamiNeural"

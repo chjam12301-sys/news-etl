@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import logging
 import os
@@ -58,7 +59,8 @@ from app.config import get_settings  # noqa: E402
 
 get_settings.cache_clear()
 
-from app.db import SessionLocal, init_db  # noqa: E402
+from sqlalchemy import select
+from app.db import Article, SessionLocal, init_db  # noqa: E402
 from app.publish import publish_all, verify_published  # noqa: E402
 from app.storage import get_storage  # noqa: E402
 
@@ -78,15 +80,52 @@ def _read_index_at(repo_dir: str, rev: str) -> dict | None:
         return None
 
 
+def repair_release_date(db, fetched_day: dt.date, target_day: dt.date, expected_ids: list[int], *, dry: bool):
+    from zoneinfo import ZoneInfo
+    start = dt.datetime.combine(fetched_day, dt.time(), ZoneInfo("Asia/Shanghai")).astimezone(dt.timezone.utc).replace(tzinfo=None)
+    end = start + dt.timedelta(days=1)
+    rows = list(db.scalars(select(Article).where(Article.fetched_at >= start, Article.fetched_at < end)
+                           .order_by(Article.id).with_for_update()))
+    if not expected_ids or len(expected_ids) != len(set(expected_ids)) or [a.id for a in rows] != sorted(expected_ids):
+        raise ValueError(f"date repair exact-match failed: found {[a.id for a in rows]}")
+    changes = [{"id": a.id, "from": a.published_date.isoformat(), "to": target_day.isoformat()} for a in rows]
+    if not dry:
+        for article in rows:
+            article.published_date = target_day
+        db.commit()
+    else:
+        db.rollback()
+    return changes
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="重新发布并校验索引")
     ap.add_argument("--dry", action="store_true", help="只校验现状，不改动")
     ap.add_argument("--days", type=int, default=3,
                     help="重新导出最近几天的详情 JSON（默认 3；配图/字段结构变更时传 30）")
+    ap.add_argument("--repair-fetched-day", type=dt.date.fromisoformat)
+    ap.add_argument("--release-date", type=dt.date.fromisoformat)
+    ap.add_argument("--expected-ids", help="Exact comma-separated article IDs required for date repair")
     args = ap.parse_args()
+    if any((args.repair_fetched_day, args.release_date, args.expected_ids)) and not all((args.repair_fetched_day, args.release_date, args.expected_ids)):
+        ap.error("date repair requires fetched day, release date and expected IDs")
 
-    init_db()
+    if not args.dry:
+        init_db()
     db = SessionLocal()
+    if args.repair_fetched_day:
+        try:
+            changes = repair_release_date(db, args.repair_fetched_day, args.release_date,
+                                          [int(x) for x in args.expected_ids.split(",")], dry=args.dry)
+            print(json.dumps({"dry": args.dry, "date_repair": changes}, ensure_ascii=False))
+        except (ValueError, TypeError) as exc:
+            db.rollback()
+            db.close()
+            print(str(exc), file=sys.stderr)
+            return 1
+        if args.dry:
+            db.close()
+            return 0
     st = get_storage()
 
     if getattr(st, "provider", "") != "github":

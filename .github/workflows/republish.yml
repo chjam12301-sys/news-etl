@@ -10,6 +10,15 @@ on:
         description: '只校验现状，不改动'
         required: false
         default: 'false'
+      repair_fetched_day:
+        description: '待修复文章的北京时间抓取日（YYYY-MM-DD；留空不修复日期）'
+        required: false
+      release_date:
+        description: '目标发行日（YYYY-MM-DD）'
+        required: false
+      expected_ids:
+        description: '必须精确匹配的文章 ID，逗号分隔'
+        required: false
 
 concurrency:
   group: daily-news
@@ -52,9 +61,14 @@ jobs:
           R2_PUBLIC_BASE: ${{ secrets.R2_PUBLIC_BASE }}
 
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          IN_DRY: ${{ inputs.dry }}
+          IN_REPAIR_DAY: ${{ inputs.repair_fetched_day }}
+          IN_RELEASE_DATE: ${{ inputs.release_date }}
+          IN_EXPECTED_IDS: ${{ inputs.expected_ids }}
         run: |
-          if [ "${{ inputs.dry }}" = "true" ]; then
-            python scripts/republish.py --dry
-          else
-            python scripts/republish.py
+          ARGS=()
+          if [ "$IN_DRY" = "true" ]; then ARGS+=(--dry); fi
+          if [ -n "$IN_REPAIR_DAY$IN_RELEASE_DATE$IN_EXPECTED_IDS" ]; then
+            ARGS+=(--repair-fetched-day "$IN_REPAIR_DAY" --release-date "$IN_RELEASE_DATE" --expected-ids "$IN_EXPECTED_IDS")
           fi
+          python scripts/republish.py "${ARGS[@]}"

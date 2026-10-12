@@ -5,10 +5,10 @@ import asyncio
 import datetime as dt
 import logging
 import time
-from pathlib import Path
+from zoneinfo import ZoneInfo
 from typing import Any
 
-from sqlalchemy import delete as _delete, select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session, selectinload
 
 from .config import settings
@@ -59,7 +59,7 @@ def _recent_titles(db: Session, days: int) -> list[str]:
     return [t for t in rows if t]
 
 
-def _upsert_article(db: Session, raw: RawArticle) -> Article | None:
+def _upsert_article(db: Session, raw: RawArticle, release_date: dt.date | None = None) -> Article | None:
     existing = db.scalar(select(Article).where(Article.fingerprint == raw.fingerprint))
     if existing:
         return None
@@ -73,7 +73,7 @@ def _upsert_article(db: Session, raw: RawArticle) -> Article | None:
         body_original=raw.body or raw.summary,
         image_url=raw.image_url,
         published_at=published,
-        published_date=published.date(),
+        published_date=release_date or release_day(),
         fingerprint=raw.fingerprint,
         rewrite_status="pending",
         tts_status="pending",
@@ -88,28 +88,15 @@ async def _process_article(
 ) -> dict[str, Any]:
     stats: dict[str, Any] = {"versions": 0, "audios": 0, "audio_errors": 0}
 
-    existing = db.scalar(
-        select(ArticleVersion).where(ArticleVersion.article_id == article.id)
-    )
-    if existing and not force:
-        log.info("[pipe] 已存在改写版本，跳过 article_id=%s", article.id)
-        return stats
-
-    # force 时只重建「缺中文译文」的版本；已有完整译文的保留，
-    # 否则会白扔 DeepSeek 额度且让旧内容的中译消失。
-    if existing and force:
-        keep = []
-        for v in db.scalars(
-            select(ArticleVersion).where(ArticleVersion.article_id == article.id)
-        ):
-            if v.title_zh and v.paragraphs_zh:
-                keep.append(v.id)
-            else:
-                db.delete(v)
+    versions = list(db.scalars(select(ArticleVersion).where(ArticleVersion.article_id == article.id)))
+    if force:
+        for version in versions:
+            if not version.title_zh or not version.paragraphs_zh:
+                db.delete(version)
         db.flush()
-        if keep:
-            log.info("[pipe] article_id=%s 保留 %d 个已有完整译文的版本，只补其余",
-                     article.id, len(keep))
+        versions = list(db.scalars(select(ArticleVersion).where(ArticleVersion.article_id == article.id)))
+    present = {version.level_code for version in versions}
+    missing = [level for level in ALL_LEVELS if level.code not in present]
 
     # 配图：多级图源降级（unsplash → pexels → wikimedia → openverse）。
     # 抓取阶段已经把新闻原图写进 image_url 了，所以判断条件不能只看「有没有值」——
@@ -148,14 +135,14 @@ async def _process_article(
                 _clear_image()
         db.flush()
 
-    llm = get_llm()
+    llm = get_llm() if missing else None
     log.info("[pipe] 改写中 article_id=%s topic=%s llm=%s",
              article.id, article.topic, llm.name if llm else "offline")
 
     t0 = time.time()
     results = await rewrite_all(
-        article.topic, article.title_original, article.body_original, list(ALL_LEVELS), llm
-    )
+        article.topic, article.title_original, article.body_original, missing, llm
+    ) if missing else []
     log.info("[pipe] 改写完成 %d 个等级，用时 %.1fs", len(results), time.time() - t0)
 
     for r in results:
@@ -266,122 +253,113 @@ async def _process_article(
     return stats
 
 
+def release_day(now: dt.datetime | None = None) -> dt.date:
+    return (now or dt.datetime.now(dt.timezone.utc)).astimezone(ZoneInfo("Asia/Shanghai")).date()
+
+
+def daily_target(db: Session, day: dt.date) -> Article | None:
+    return db.scalar(select(Article).where(Article.published_date == day)
+                     .order_by(Article.fetched_at, Article.id).limit(1))
+
+
+def _reserve_target(db: Session, day: dt.date, raws: list[RawArticle]) -> tuple[Article | None, bool]:
+    # A database lock also covers API/manual invocations outside Actions concurrency.
+    db.rollback()
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(:namespace, :day)"),
+                   {"namespace": 730105, "day": day.toordinal()})
+    elif db.get_bind().dialect.name == "sqlite":
+        db.execute(text("BEGIN IMMEDIATE"))
+    article = daily_target(db, day)
+    created = False
+    if article is None:
+        for raw in raws:
+            article = _upsert_article(db, raw, day)
+            if article is not None:
+                created = True
+                break
+    db.commit()
+    return article, created
+
+
 async def run_daily(
     topics: list[str] | None = None,
     per_topic: int | None = None,
     with_tts: bool = True,
     force: bool = False,
     reset_all: bool = False,
+    warmup_only: bool = False,
 ) -> dict[str, Any]:
-    """执行一次完整流水线。
-
-    reset_all=True 时先清空 articles 表（连带versions/audio），
-    用于「RSS 去重导致抓不到新文章」时重新开始。
-    """
     if reset_all:
-        init_db()
-        d = SessionLocal()
-        try:
-            n_v = d.execute(_delete(ArticleVersion)).rowcount
-            n_a = d.execute(_delete(Article)).rowcount
-            d.commit()
-            log.info("[pipe] 已清空 %d 篇文章 / %d 个版本", n_a, n_v)
-        finally:
-            d.close()
+        raise ValueError("daily does not allow reset; historical content must be preserved")
     started = dt.datetime.now(dt.timezone.utc)
+    day = release_day(started)
     init_db()
-    job = JobRun(job="daily", status="running", started_at=started)
-    db = SessionLocal()
-    db.add(job)
-    db.commit()
-
-    totals = {"fetched": 0, "created": 0, "versions": 0, "audios": 0, "audio_errors": 0, "skipped": 0}
+    totals: dict[str, Any] = {"fetched": 0, "created": 0, "versions": 0, "audios": 0,
+                              "audio_errors": 0, "skipped": 0, "release_date": day.isoformat()}
     errors: list[str] = []
-
-    try:
-        log.info("[pipe] 开始每日任务 topics=%s per_topic=%s", topics or settings.topics, per_topic or settings.articles_per_topic)
-        recent = _recent_titles(db, getattr(settings, "dedup_lookback_days", 60))
-        raws = await asyncio.to_thread(collect, topics, per_topic, recent)
-        totals["fetched"] = len(raws)
-        log.info("[pipe] 抓取到 %d 篇", len(raws))
-
-        for raw in raws:
-            db.expire_all()
-            try:
-                article = _upsert_article(db, raw)
-                if article is None:
-                    totals["skipped"] += 1
-                    db.commit()
-                    continue
-                totals["created"] += 1
-                db.commit()
-                stats = await _process_article(db, article, with_tts, force)
-                for k in ("versions", "audios", "audio_errors"):
-                    totals[k] += stats.get(k, 0)
-                db.commit()
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"{raw.source_url}: {exc}")
-                log.exception("[pipe] 单篇失败 %s", raw.source_url)
-                db.rollback()
-
-        # 导出静态 JSON（CDN 直读用）。失败不影响主流程。
+    with SessionLocal() as db:
+        job = JobRun(job="daily", status="running", started_at=started)
+        db.add(job)
+        db.commit()
         try:
-            from .exporter import export_all
-
-            export_result = export_all(db)
-            totals["export"] = "ok" if export_result.get("exported") else "skipped"
-        except Exception as exc:  # noqa: BLE001
-            log.warning("[pipe] JSON 导出失败: %s", exc)
-            totals["export"] = "failed"
-
-        job.status = "failed" if errors and totals["versions"] == 0 else "success"
+            article = daily_target(db, day)
+            if warmup_only:
+                if article is None:
+                    raise ValueError("no existing article for today's warmup")
+            else:
+                raws = []
+                if article is None:
+                    recent = _recent_titles(db, getattr(settings, "dedup_lookback_days", 60))
+                    db.rollback()
+                    raws = await asyncio.to_thread(collect, topics, per_topic, recent, total_limit=1)
+                    totals["fetched"] = len(raws)
+                article, created = _reserve_target(db, day, raws)
+                totals["created"] = int(created)
+                if article is None:
+                    raise ValueError("no usable article for today's release")
+            totals["article_id"] = article.id
+            if not warmup_only:
+                # Serialize recovery of the same reserved article, then re-read completed levels.
+                article = db.scalar(select(Article).where(Article.id == article.id)
+                                    .with_for_update().execution_options(populate_existing=True))
+                stats = await _process_article(db, article, with_tts, force)
+                totals.update(stats)
+                db.commit()
+                if totals["audio_errors"]:
+                    raise RuntimeError("default audio incomplete; rerun resumes missing assets")
+                from .exporter import export_all
+                export_result = export_all(db)
+                totals["export"] = "ok" if export_result.get("exported") else "skipped"
+                storage = get_storage()
+                if getattr(storage, "provider", "") == "github":
+                    from .publish import publish_all
+                    pub = publish_all(db=db, storage=storage, topics_days=3,
+                                      commit_msg=f"content: daily {day} article {article.id}")
+                    totals.update(publish_ok=bool(pub.get("ok")),
+                                  publish_verify=pub.get("verify"), index_rev=pub.get("index_rev", ""))
+                    if not pub.get("ok"):
+                        raise RuntimeError("four-stage publication failed")
+                    try:
+                        totals["git_pruned"] = storage.prune(settings.github_keep_days)["deleted"]
+                    except Exception:
+                        totals["prune"] = "failed"
+            if warmup_only or totals.get("publish_ok"):
+                from .voice_warmup import warmup_article
+                try:
+                    totals["voice_warmup"] = await warmup_article(db, article.id)
+                except Exception as exc:
+                    totals["voice_warmup"] = {"status": "failed", "error": type(exc).__name__}
+            job.status = "success"
+        except Exception as exc:
+            db.rollback()
+            log.exception("[pipe] daily failed")
+            errors.append(str(exc)[:300])
+            job.status = "failed"
         job.stats = totals
-        job.error = "; ".join(errors[:10]) if errors else None
-    except Exception as exc:  # noqa: BLE001
-        log.exception("[pipe] 任务异常")
-        job.status = "failed"
-        job.stats = totals
-        job.error = str(exc)
-    finally:
+        job.error = "; ".join(errors) if errors else None
         job.finished_at = dt.datetime.now(dt.timezone.utc)
         db.add(job)
         db.commit()
-        db.close()
-
-    # 发布：① 提交内容 → ② 用该 commit 生成索引 → ③ 校验 → ④ 更新指针
-    # 顺序不能颠倒：索引里的 detail_url / audio.url 必须在内容提交后才生成，
-    # 否则会指向不含这些文件的旧 commit（首页能显示卡片、点进详情却 404）。
-    if getattr(get_storage(), "provider", "") == "github":
-        try:
-            from .publish import publish_all
-
-            pub = publish_all(
-                db=SessionLocal(),
-                storage=get_storage(),
-                topics_days=3,
-                commit_msg=(
-                    f"content: {totals.get('versions', 0)} 版本 / "
-                    f"{totals.get('audios', 0)} 音频"
-                    f"（{job.finished_at:%Y-%m-%d %H:%M}）"
-                ),
-            )
-            totals["publish_ok"] = pub.get("ok")
-            totals["publish_verify"] = pub.get("verify")
-            totals["index_rev"] = pub.get("index_rev", "")
-            if not pub.get("ok"):
-                log.error("[pipe] 发布未完成：%s", pub.get("verify"))
-            else:
-                st = get_storage()
-                keep = getattr(settings, "github_keep_days", 14)
-                totals["git_pruned"] = st.prune(keep)["deleted"]
-        except Exception as exc:  # noqa: BLE001
-            log.error("[pipe] 发布失败: %s", exc)
-            totals["publish_error"] = str(exc)[:200]
-
-    log.info("[pipe] 结束 %s", totals)
-    return {
-        "status": job.status,
-        "stats": totals,
-        "error": job.error,
-        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
-    }
+        return {"status": job.status, "stats": totals, "error": job.error,
+                "finished_at": job.finished_at.isoformat()}
