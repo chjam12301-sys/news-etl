@@ -46,3 +46,14 @@
 - `tests/test_daily_publish.py` — 追加日期迁移后 root 可达归档 version 唯一测试；未改生产日期导出逻辑。
 - `docs/daily-publication.md` — CDN 可见性与重试说明。
 - 追加验证：`.venv/bin/python -m pytest tests/test_pointer_purge.py tests/test_daily_publish.py tests/test_publish.py tests/test_audio_store.py -q` → 48 passed；storage_github compileall 与 diff-check → PASS。
+
+## 追加实施：日目录固定版本链（2026-10-12）
+- 主会话基于 `/tmp/news-index-detail-check.json` 追加：根 latest 正确但按日目录 70 条 detail_url 指旧日期详情；允许修改 `app/publish.py`、`app/exporter.py` 与聚焦测试。
+- `app/exporter.py` — `export_day` 支持显式 ref 与仅导出目录。
+- `app/publish.py` — 详情提交后重写并提交日目录，再用 catalog_rev 导出根索引；验证根所有可达日期目录及实际详情定位、日期/身份/hash，拒绝跨日重复 version 与异仓库/非固定版本详情路径；重复音频 URL 只 HEAD 一次。
+- `tests/test_daily_catalog_publish.py` — 真实本地 Git 测试正确的三层 commit 链及旧定位/日期/等级/hash/缺日目录/重复条目/异仓库/main 路径拒绝，错误日目录不更新指针。
+- `docs/daily-publication.md` — 固定版本链说明。
+- 主会话明确要求同步计划，已在 Day 的 `features/voice-roles/daily-publish-plan.md` 追加本次实证、最小范围与验收。
+- 未运行远端写、提交、推送或 Actions。
+- 验证：`.venv/bin/python -m pytest tests/test_daily_catalog_publish.py tests/test_daily_publish.py tests/test_publish.py tests/test_audio_store.py tests/test_pointer_purge.py tests/test_content_hash.py -q` → 93 passed。
+- `app/publish.py` / `app/exporter.py` compileall、`git diff --check` → PASS。

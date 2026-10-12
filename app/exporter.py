@@ -213,10 +213,10 @@ def export_version(db: Session, v: ArticleVersion, a: Article) -> str:
     return key
 
 
-def export_day(db: Session, date: dt.date) -> str:
+def export_day(db: Session, date: dt.date, *, rev: str = "", export_details: bool = True) -> str:
     """导出某天的完整列表。按 语言/等级 分组，App 可整日缓存。"""
     st = get_storage()
-    base, rev = _cdn_base_with_rev(st, (settings.public_base_url or "").rstrip("/"))
+    base, rev = _cdn_base_with_rev(st, (settings.public_base_url or "").rstrip("/"), rev)
 
     rows = db.execute(
         select(ArticleVersion, Article)
@@ -247,7 +247,8 @@ def export_day(db: Session, date: dt.date) -> str:
         grouped.setdefault(v.lang, {}).setdefault(v.level_code, []).append(
             _version_summary(v, a, base, rev)
         )
-        export_version(db, v, a)
+        if export_details:
+            export_version(db, v, a)
 
     payload = {
         "date": date.isoformat(),

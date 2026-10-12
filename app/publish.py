@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 from dataclasses import dataclass, field
 from typing import Any
@@ -167,7 +168,8 @@ def verify_published(
       1. detail_url 指向的文件，在**该 URL 自己的 commit** 下存在
       2. audio.url 指向的文件，在该URL 自己的 commit 下存在
       3. 详情的 version_id / article_id 与索引条目一致
-      4. 详情的 content_hash 与索引条目一致（防张冠李戴）
+      4. 详情的 content_hash、发行日期与索引条目一致
+      5. 沿 root.base_url + root.dates 校验实际按日目录及其详情定位
 
     注意：按 URL 自己的 commit 检查存在性，而不是强制等于传入的 rev ——
     只要那个 commit 里文件在，浏览器就能取到；链接完全可用。
@@ -187,17 +189,71 @@ def verify_published(
         res.error = "索引为空"
         return res
 
+    trusted_prefix = None
+    if "dates" in index:
+        base = index.get("base_url", "")
+        day_ref = _rev_in_url(base)
+        day_items: dict[int, dict[str, Any]] = {}
+        dates = index.get("dates")
+        pinned_base = re.fullmatch(r"(https://cdn\.jsdelivr\.net/gh/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@([0-9a-f]{7,40})/content", base)
+        if not isinstance(dates, list) or not all(isinstance(d, str) for d in dates) or len(dates) != len(set(dates)) or pinned_base is None:
+            res.ok = False
+            res.error = "按日目录根地址或日期列表无效"
+            return res
+        trusted_prefix = pinned_base.group(1)
+        for date in dates:
+            try:
+                import datetime as dt
+                if dt.date.fromisoformat(date).isoformat() != date:
+                    raise ValueError("invalid day")
+                raw_day = _read_in_commit(repo_dir, day_ref, _rel(f"{base}/data/{date}/index.json"))
+                day = json.loads(raw_day) if raw_day is not None else None
+                if not isinstance(day, dict) or day.get("date") != date:
+                    raise ValueError("missing or mismatched day")
+                grouped = day.get("versions")
+                if not isinstance(grouped, dict):
+                    raise ValueError("missing levels")
+                for lang, levels in grouped.items():
+                    for code, rows in levels.items():
+                        for item in rows:
+                            vid = item.get("version_id")
+                            if (not isinstance(vid, int) or vid in day_items
+                                    or item.get("published_date") != date
+                                    or item.get("lang") != lang or item.get("level_code") != code):
+                                raise ValueError("duplicate or mismatched identity/date")
+                            day_items[vid] = item
+                if day.get("version_count") != sum(len(rows) for levels in grouped.values() for rows in levels.values()):
+                    raise ValueError("day version count mismatch")
+            except Exception:
+                res.ok = False
+                res.identity_mismatch.append(f"日目录 {date} 缺失或身份/日期不符")
+        for item in items:
+            expected = day_items.get(item.get("version_id"))
+            if item.get("published_date") != index.get("latest", {}).get("date") or expected is None or any(expected.get(key) != item.get(key) for key in
+                                       ("article_id", "level_code", "lang", "published_date", "content_hash")):
+                res.ok = False
+                res.identity_mismatch.append(f"v{item.get('version_id')} 根索引与日目录不符")
+        items.extend(day_items.values())
+
+    audio_checks: dict[str, tuple[bool, str]] = {}
+    seen_details: set[tuple] = set()
     for it in items:
         vid = it.get("version_id")
+        signature = (vid, it.get("detail_url"), it.get("article_id"), it.get("level_code"),
+                     it.get("published_date"), it.get("content_hash"))
+        if signature in seen_details:
+            continue
+        seen_details.add(signature)
         res.checked += 1
 
         d_url = it.get("detail_url", "")
         d_rel = _rel(d_url)
+        if trusted_prefix is not None and not re.fullmatch(
+                re.escape(trusted_prefix) + r"@[0-9a-f]{7,40}/content/data/versions/" + re.escape(str(vid)) + r"\.json", d_url):
+            res.ok = False
+            res.identity_mismatch.append(f"v{vid} 详情地址不是同仓库固定版本路径")
+            continue
 
-        # URL 里的 commit 必须是**正在校验的这个** rev。
-        # 否则链接指向另一个（可能不含这些文件的）commit ——
-        # 这正是「首页能显示卡片、点进详情 404」的原故障形态，
-        # 光看「文件在 rev 下存在」是发现不了的。
         d_rev = _rev_in_url(d_url)
 
         # 关键：按 **URL 自己的 rev** 检查存在性 —— 那才是浏览器实际请求的地址。
@@ -222,7 +278,9 @@ def verify_published(
                 res.ok = False
                 res.audio_errors.append(f"v{vid} 音频 URL 非 http: {a_url}")
             else:
-                ok, why = head(a_url)
+                if a_url not in audio_checks:
+                    audio_checks[a_url] = head(a_url)
+                ok, why = audio_checks[a_url]
                 if not ok:
                     res.missing_audio.append(vid)
                     res.ok = False
@@ -253,6 +311,10 @@ def verify_published(
             if det.get("content_hash") != it.get("content_hash"):
                 res.hash_mismatch.append(vid)
                 res.ok = False
+            for key in ("published_date", "level_code", "lang", "level", "title"):
+                if key in it and det.get(key) != it.get(key):
+                    res.identity_mismatch.append(f"v{vid} {key} 不符")
+                    res.ok = False
 
     return res
 
@@ -305,11 +367,22 @@ def publish_all(*, db, storage, topics_days: int = 3, commit_msg: str = "content
     else:
         content_rev = ""
 
-    # ── ② 用**实际包含这些文件**的 commit 生成索引 ──────────────────
-    export_index(db, days=topics_days, rev=content_rev)
+    # Daily catalogs must point to the committed details, while root.base_url must
+    # point to the later commit containing those corrected catalogs.
+    for d in dates:
+        if d:
+            export_day(db, d, rev=content_rev, export_details=False)
+    if getattr(st, "provider", "") == "github":
+        st.commit(f"{commit_msg}: 按日索引（详情基于 {content_rev[:7]}）")
+        catalog_rev = st.current_ref()
+    else:
+        catalog_rev = ""
+
+    # ── ② 根索引引用已提交的按日目录 ────────────────────────────────
+    export_index(db, days=topics_days, rev=catalog_rev)
 
     if getattr(st, "provider", "") == "github":
-        st.commit(f"{commit_msg}: 索引（链接基于 {content_rev[:7]}）")
+        st.commit(f"{commit_msg}: 索引（链接基于 {catalog_rev[:7]}）")
         index_rev = st.current_ref()
 
         # ── ③ 全量校验：索引引用的每一份详情与音频 ──────────────────

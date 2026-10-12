@@ -33,3 +33,9 @@ python scripts/republish.py --repair-fetched-day 2026-10-12 --release-date 2026-
 指针推送成功后，自动对 jsDelivr 的 `content/latest.json` 与 `content/data/latest.json` 两个可变路径清缓存。每个请求最多等待 10 秒，不跟随重定向；只有响应 `finished`、未限流且各 provider 全部成功，才记录 purge 完成。失败会明确输出“指针已发布但 CDN 可见性未确认”，返回 `retry_needed`，不会撤销已发布内容。重新发布可安全重试这两个清缓存请求。仅清可变指针，不清固定 SHA 详情/索引/音频。
 
 参考：[jsDelivr 官方清缓存说明](https://www.jsdelivr.com/tools/purge)。清缓存操作完成不等于所有网络节点立刻可见，发布联调应再读取 CDN 指针确认目标 ref。
+
+## 按日目录与详情的固定版本
+
+发布时先提交详情得到 `content_rev`，再只重写按日目录，使其中 `detail_url` 指向 `content_rev`，提交得到 `catalog_rev`。根索引的 `base_url` 指向 `catalog_rev`。这样 App 从根索引进入日期归档，再进入详情时，每一层引用的文件都已经存在，且发行日期一致；不依赖重复发布来碰巧赶上正确 commit。
+
+发布校验沿根索引列出的每个日期读取真实固定版本日目录，再核对详情的版本、文章、等级、语言、发行日期及 hash。旧详情虽返回 200，但日期不一致时仍阻断 latest 更新。详情 JSON 内自身 `detail_url` 不做自引用相等要求。
