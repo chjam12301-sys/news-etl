@@ -405,15 +405,117 @@ async def _synth_via_relay(
     return await asyncio.to_thread(_post)
 
 
+# --------------------------------------------------------------------------- #
+# Kokoro OSS TTS（CI 内自托管，免费不绑卡，替代被微软 403 封锁的 edge-tts）
+# --------------------------------------------------------------------------- #
+_KOKORO_PIPELINES: dict[str, Any] = {}  # lang_code -> KPipeline（进程内复用，避免重复加载模型）
+
+
+def _kokoro_voice(lang: str) -> str:
+    """Kokoro 模式下的 voice id，由 env TTS_VOICE_EN/JA 驱动，与 edge-tts 的
+    微软 voice 解耦。默认 en=af_heart / ja=jf_alpha（均为 Kokoro 官方音色）。"""
+    if lang == "ja":
+        return os.environ.get("TTS_VOICE_JA") or "jf_alpha"
+    return os.environ.get("TTS_VOICE_EN") or "af_heart"
+
+
+def _get_kokoro_pipeline(lang_code: str):
+    if lang_code not in _KOKORO_PIPELINES:
+        from kokoro import KPipeline
+
+        _KOKORO_PIPELINES[lang_code] = KPipeline(lang_code=lang_code)
+    return _KOKORO_PIPELINES[lang_code]
+
+
+async def _synth_kokoro(text: str, lang: str) -> TTSResult:
+    """Kokoro OSS 合成：返回 WAV 音频 + 词级 boundaries，复用下游 _map_boundaries_to_text。
+
+    Kokoro 的 KPipeline 原生暴露 result.tokens（misaki MToken），每个 token 带
+    .text（词级原文）、.start_ts/.end_ts（秒，相对当前 chunk）、.whitespace（词后空白）。
+    这里累加每个 chunk 的音频时长得到全局偏移，转成与 edge-tts 一致的
+    {offset(100ns), duration(100ns), text} boundaries，App 端时间轴 schema 零改动。
+
+    空音频 / 无 token 时间戳必须 raise（no-silent-tts），不得产出静默占位。
+    """
+    lang_code = "j" if lang == "ja" else "a"
+    voice = _kokoro_voice(lang)
+    pipeline = await asyncio.to_thread(_get_kokoro_pipeline, lang_code)
+    spoken = normalize_for_tts(text)
+
+    def _run() -> tuple[bytes, list[dict[str, Any]]]:
+        import io
+
+        import numpy as np
+        import soundfile as sf
+
+        chunks_audio: list[np.ndarray] = []
+        boundaries: list[dict[str, Any]] = []
+        offset_sec = 0.0
+        for result in pipeline(spoken, voice=voice):
+            audio = getattr(result, "audio", None)
+            toks = getattr(result, "tokens", None)
+            if audio is None and isinstance(result, (tuple, list)):
+                audio = result[2] if len(result) > 2 else None
+            if audio is not None and len(audio):
+                chunks_audio.append(audio)
+                if toks:
+                    for t in toks:
+                        txt = getattr(t, "text", "") or ""
+                        st = getattr(t, "start_ts", None)
+                        et = getattr(t, "end_ts", None)
+                        if txt and st is not None and et is not None:
+                            boundaries.append(
+                                {
+                                    "offset": int((offset_sec + float(st)) * TICKS_PER_SECOND),
+                                    "duration": max(1, int((float(et) - float(st)) * TICKS_PER_SECOND)),
+                                    "text": txt,
+                                }
+                            )
+                offset_sec += len(audio) / 24000.0
+        if not chunks_audio:
+            raise RuntimeError("Kokoro 未返回音频（模型推理失败或文本为空）")
+        full = np.concatenate(chunks_audio) if len(chunks_audio) > 1 else chunks_audio[0]
+        buf = io.BytesIO()
+        sf.write(buf, full, 24000, format="WAV")
+        return buf.getvalue(), boundaries
+
+    audio_bytes, boundaries = await asyncio.to_thread(_run)
+    if not audio_bytes:
+        raise RuntimeError("Kokoro 返回空音频")
+    if not boundaries:
+        raise RuntimeError("Kokoro 未返回 token 时间戳（请确认 kokoro>=0.7 且 WLT 已启用）")
+
+    alignments = _map_boundaries_to_text(boundaries, spoken)
+    if not alignments:
+        raise RuntimeError("Kokoro 时间戳无法对齐到文本")
+    timings = _build_char_index(spoken, alignments)
+    duration = timings[-1].end if timings else 0.0
+    return TTSResult(
+        audio_bytes=audio_bytes,
+        duration=round(duration, 3),
+        timings=timings,
+        engine="kokoro",
+        voice=voice,
+    )
+
+
 async def synthesize(text: str, lang: str, voice: str | None = None) -> TTSResult:
-    """合成音频和时间轴；失败时由调用方保留缺失状态。"""
-    voice = voice or _pick_voice(lang)
+    """合成音频和时间轴；失败时由调用方保留缺失状态。
+
+    引擎由 env TTS_ENGINE 选择：
+      - kokoro（自 v2.8 起默认）：CI 内自托管 OSS，免费不绑卡，替代被微软 403 封锁的 edge-tts
+      - edge-tts（回退）：本地 edge-tts 或自建 Cloudflare Worker 中继
+    """
     if not text.strip():
         raise ValueError("TTS text is empty")
     if not settings.tts_enabled:
         raise RuntimeError("TTS is disabled")
+    engine = os.environ.get("TTS_ENGINE", "edge-tts").lower()
     try:
-        res = await asyncio.wait_for(_synth_edge(text, voice), timeout=180)
+        if engine == "kokoro":
+            res = await asyncio.wait_for(_synth_kokoro(text, lang), timeout=300)
+        else:
+            res = await asyncio.wait_for(_synth_edge(text, voice or _pick_voice(lang)), timeout=180)
     except Exception as exc:
         status = getattr(exc, "status", None) or getattr(exc, "code", None)
         suffix = f" [HTTP {status}]" if status else ""

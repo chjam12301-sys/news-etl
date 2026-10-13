@@ -1,0 +1,6 @@
+# Kokoro OSS TTS（CI 内自托管，免费不绑卡，替代被微软 403 封锁的 edge-tts）
+# 仅当 TTS_ENGINE=kokoro 时需要。torch 由 kokoro 依赖自动拉取（CPU only）。
+kokoro>=0.7,<0.8
+misaki[en,ja]>=0.7
+soundfile>=0.12
+numpy>=1.24

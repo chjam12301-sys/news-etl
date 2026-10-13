@@ -234,6 +234,17 @@ async def _process_article(
     else:
         article.tts_status = "skipped"
 
+    # no-silent-tts 护栏：TTS 链路整体故障时必须大声失败，绝不允许静默降级让 run
+    # 看似成功（缺音频却 exit 0）。仅当「需要配音的版本全部失败」时中止当次 run；
+    # 个别版本失败仍记 partial，不阻断同批其他文章。
+    if with_tts and settings.tts_enabled:
+        needed = stats.get("audios", 0) + stats.get("audio_errors", 0)
+        if needed > 0 and stats.get("audios", 0) == 0:
+            raise RuntimeError(
+                f"[no-silent-tts] TTS 全部失败：{stats.get('audio_errors', 0)} 个版本均"
+                f"未产出音频，链路异常，中止当次 run（不落静默占位）"
+            )
+
     # 内容指纹：必须等音频生成完再算，否则 hash 会与实际音频不符
     try:
         from .content_hash import from_version
