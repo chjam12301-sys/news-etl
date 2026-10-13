@@ -66,6 +66,44 @@ jobs:
           except Exception as exc:
               print(f"  Neon: {type(exc).__name__} {str(exc)[:90]}")
           PY
+
+          echo "--- edge-tts（Azure IP 直连，生产路径）---"
+          python - <<'PY'
+          import asyncio, os
+          import edge_tts
+          import edge_tts.constants as C
+
+          # 复刻 app/tts.py 的版本补丁，隔离版本因素、专测 IP 封锁
+          ver = os.environ.get("EDGE_TTS_CHROMIUM_VERSION", "155.0.4283.45")
+          C.CHROMIUM_FULL_VERSION = ver
+          C.CHROMIUM_MAJOR_VERSION = ver.split(".", 1)[0]
+          C.SEC_MS_GEC_VERSION = f"1-{ver}"
+          ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                f" (KHTML, like Gecko) Chrome/{C.CHROMIUM_MAJOR_VERSION}.0.0.0 Safari/537.36"
+                f" Edg/{C.CHROMIUM_MAJOR_VERSION}.0.0.0")
+          C.BASE_HEADERS["User-Agent"] = ua
+          for d in (C.WSS_HEADERS, C.VOICE_HEADERS):
+              d.update(C.BASE_HEADERS)
+          C.VOICE_HEADERS["Sec-CH-UA"] = (
+              f'" Not;A Brand";v="99", "Microsoft Edge";v="{C.CHROMIUM_MAJOR_VERSION}",'
+              f' "Chromium";v="{C.CHROMIUM_MAJOR_VERSION}"')
+          edge_tts.communicate.SEC_MS_GEC_VERSION = C.SEC_MS_GEC_VERSION
+
+          async def probe():
+              try:
+                  comm = edge_tts.Communicate("Hello, this is a connectivity test.", "en-US-AriaNeural", boundary="WordBoundary")
+                  chunks = 0
+                  async for _ in comm.stream():
+                      chunks += 1
+                  print(f"  edge-tts (Azure 直连): 成功, {chunks} 个流分片 -> CI 无需代理")
+              except Exception as e:
+                  st = getattr(e, "status", None) or getattr(e, "code", None)
+                  tag = f" [HTTP {st}]" if st else ""
+                  print(f"  edge-tts (Azure 直连): 失败 {type(e).__name__}{tag} - {str(e)[:140]}")
+                  print("  -> 若 403: Azure 数据中心 IP 被微软标记, 需走代理出口或 CI 内自托管 OSS TTS")
+
+          asyncio.run(probe())
+          PY
           set -e
 
       - name: 组装参数
@@ -114,6 +152,11 @@ jobs:
           TTS_ENABLED: "true"
           TTS_VOICE_EN: en-US-AriaNeural
           TTS_VOICE_JA: ja-JP-NanamiNeural
+
+          # TTS 代理出口：GitHub runner 在 Azure 数据中心 IP，会被微软标记 → 403。
+          # 设一个远程代理公网地址（非中国/住宅级出口），让微软调用从干净 IP 发出。
+          # secret 留空时 tts.py 自动回退直连（仅本机/自托管 runner 才可能需要）。
+          EDGE_TTS_PROXY: ${{ secrets.EDGE_TTS_PROXY }}
 
           # 配图：多级降级 unsplash → pexels → wikimedia → openverse
           # 缺 key 的源会自动跳过，不会中断流水线

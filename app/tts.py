@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -242,16 +243,85 @@ def _build_char_index(spoken: str, alignments: list[tuple[str, float, float]]) -
     return timings
 
 
+# 微软会轮换 readaloud 接受的 Edge 版本；edge-tts 写死的常量过期后会 403。
+# 这里在运行时覆盖为当前稳定版（默认 155.0.4283.45，2026-10-08 发布），
+# 可用环境变量 EDGE_TTS_CHROMIUM_VERSION 调整，方便下次微软再轮换时只改一处。
+_EDGE_TTS_VERSION_PATCHED = False
+
+
+def _patch_edge_tts_version() -> None:
+    global _EDGE_TTS_VERSION_PATCHED
+    if _EDGE_TTS_VERSION_PATCHED:
+        return
+    import edge_tts
+    import edge_tts.constants as C
+
+    ver = os.environ.get("EDGE_TTS_CHROMIUM_VERSION", "155.0.4283.45")
+    C.CHROMIUM_FULL_VERSION = ver
+    C.CHROMIUM_MAJOR_VERSION = ver.split(".", 1)[0]
+    C.SEC_MS_GEC_VERSION = f"1-{ver}"
+    ua = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        f" (KHTML, like Gecko) Chrome/{C.CHROMIUM_MAJOR_VERSION}.0.0.0 Safari/537.36"
+        f" Edg/{C.CHROMIUM_MAJOR_VERSION}.0.0.0"
+    )
+    C.BASE_HEADERS["User-Agent"] = ua
+    for d in (C.WSS_HEADERS, C.VOICE_HEADERS):
+        d.update(C.BASE_HEADERS)
+    C.VOICE_HEADERS["Sec-CH-UA"] = (
+        f'" Not;A Brand";v="99", "Microsoft Edge";v="{C.CHROMIUM_MAJOR_VERSION}",'
+        f' "Chromium";v="{C.CHROMIUM_MAJOR_VERSION}"'
+    )
+    edge_tts.communicate.SEC_MS_GEC_VERSION = C.SEC_MS_GEC_VERSION
+    _EDGE_TTS_VERSION_PATCHED = True
+
+
 async def _synth_edge(text: str, voice: str) -> TTSResult:
+    """合成音频 + 逐词时间轴。
+
+    默认走本地 edge-tts；若设置 TTS_RELAY_URL，则改为调用自建的
+    Cloudflare Worker 中继（微软调用从 Cloudflare 非中国边缘发出，同时绕开
+    本机/CI 的 403 地域墙与数据中心 IP 墙）。两种路径返回的 boundaries 结构一致，
+    下游对齐逻辑 (_map_boundaries_to_text) 无需改动。
+    """
+    relay_url = os.environ.get("TTS_RELAY_URL") or None
+    if relay_url:
+        audio_bytes, boundaries = await _synth_via_relay(relay_url, text, voice)
+    else:
+        audio_bytes, boundaries = await _synth_via_edge_tts(text, voice)
+
+    if not boundaries:
+        raise RuntimeError("未收到任何 WordBoundary 事件")
+
+    spoken = normalize_for_tts(text)
+    alignments = _map_boundaries_to_text(boundaries, spoken)
+    timings = _build_char_index(spoken, alignments)
+    duration = timings[-1].end if timings else 0.0
+    return TTSResult(
+        audio_bytes=audio_bytes,
+        duration=round(duration, 3),
+        timings=timings,
+        engine="edge-tts-relay" if relay_url else "edge-tts",
+        voice=voice,
+    )
+
+
+async def _synth_via_edge_tts(text: str, voice: str) -> tuple[bytes, list[dict[str, Any]]]:
     import edge_tts
 
+    _patch_edge_tts_version()
+
+    # 仅当显式设置 EDGE_TTS_PROXY 时才走代理；默认直连（住宅 IP 即可）。
+    # 不要自动读全局 HTTPS_PROXY：本机可能挂着未启动/非住宅的全局代理，
+    # 一旦误用会导致连代理就被拒（ClientProxyConnectionError），反而掩盖真实问题。
+    proxy = os.environ.get("EDGE_TTS_PROXY") or None
     # edge-tts>=6.1 把 boundary 提到 Communicate.__init__，默认只回句边界，
     # 必须显式要 WordBoundary 才有逐词时间戳。
     try:
-        communicate = edge_tts.Communicate(text, voice, boundary="WordBoundary")
+        communicate = edge_tts.Communicate(text, voice, boundary="WordBoundary", proxy=proxy)
     except TypeError:
         # 兼容旧版（boundary 在 stream 上）
-        communicate = edge_tts.Communicate(text, voice)
+        communicate = edge_tts.Communicate(text, voice, proxy=proxy)
 
     audio = bytearray()
     boundaries: list[dict[str, Any]] = []
@@ -275,20 +345,64 @@ async def _synth_edge(text: str, voice: str) -> TTSResult:
                 }
             )
 
-    if not boundaries:
-        raise RuntimeError("未收到任何 WordBoundary 事件")
+    if not audio:
+        raise RuntimeError("TTS returned empty audio")
+    return bytes(audio), boundaries
 
-    spoken = normalize_for_tts(text)
-    alignments = _map_boundaries_to_text(boundaries, spoken)
-    timings = _build_char_index(spoken, alignments)
-    duration = timings[-1].end if timings else 0.0
-    return TTSResult(
-        audio_bytes=bytes(audio),
-        duration=round(duration, 3),
-        timings=timings,
-        engine="edge-tts",
-        voice=voice,
-    )
+
+async def _synth_via_relay(
+    relay_url: str, text: str, voice: str
+) -> tuple[bytes, list[dict[str, Any]]]:
+    """调用自建 Cloudflare Worker 中继，返回 (audio_bytes, boundaries)。
+
+    中继接口：POST {relay_url}  body={text, voice}
+    响应：{audio_base64, boundaries:[{offset,duration,text}], format}
+    boundaries 坐标系与 edge-tts 一致（100ns tick，已含跨分片补偿）。
+    """
+    import base64
+    import json
+    import urllib.error
+    import urllib.request
+
+    key = os.environ.get("TTS_RELAY_KEY") or ""
+
+    def _post() -> tuple[bytes, list[dict[str, Any]]]:
+        payload = json.dumps({"text": text, "voice": voice}).encode("utf-8")
+        req = urllib.request.Request(
+            relay_url,
+            data=payload,
+            method="POST",
+            headers={"Content-Type": "application/json", "x-api-key": key},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                raw = resp.read().decode("utf-8")
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8")
+            except Exception:
+                pass
+            raise RuntimeError(f"relay HTTP {e.code}: {detail}") from e
+        data = json.loads(raw)
+        if "error" in data:
+            raise RuntimeError(f"relay error: {data['error']}")
+        audio_b64 = data.get("audio_base64") or ""
+        audio_bytes = base64.b64decode(audio_b64)
+        boundaries = data.get("boundaries") or []
+        if not audio_bytes:
+            raise RuntimeError("relay returned empty audio")
+        cleaned = [
+            {
+                "offset": int(b.get("offset", 0)),
+                "duration": int(b.get("duration", 0)),
+                "text": b.get("text", ""),
+            }
+            for b in boundaries
+        ]
+        return audio_bytes, cleaned
+
+    return await asyncio.to_thread(_post)
 
 
 async def synthesize(text: str, lang: str, voice: str | None = None) -> TTSResult:
@@ -301,7 +415,9 @@ async def synthesize(text: str, lang: str, voice: str | None = None) -> TTSResul
     try:
         res = await asyncio.wait_for(_synth_edge(text, voice), timeout=180)
     except Exception as exc:
-        raise RuntimeError(f"TTS synthesis failed ({type(exc).__name__})") from exc
+        status = getattr(exc, "status", None) or getattr(exc, "code", None)
+        suffix = f" [HTTP {status}]" if status else ""
+        raise RuntimeError(f"TTS synthesis failed ({type(exc).__name__}){suffix}") from exc
     if not res.audio_bytes:
         raise RuntimeError("TTS returned empty audio")
     return res

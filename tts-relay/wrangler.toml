@@ -1,0 +1,13 @@
+name = "news-etl-tts-relay"
+main = "index.js"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+# 微软 Edge 稳定版号，与 news-etl/app/tts.py 里的 EDGE_TTS_CHROMIUM_VERSION 保持一致。
+# 微软轮换版本时只需改这里（wrangler deploy）或 wrangler secret/variable 覆盖。
+[vars]
+CHROMIUM_VERSION = "155.0.4283.45"
+
+# AUTH_KEY 是密钥，请用以下命令设置（不要在文件里写明文）：
+#   wrangler secret put AUTH_KEY
+# news-etl 侧用环境变量 TTS_RELAY_KEY 带上同一个值。
