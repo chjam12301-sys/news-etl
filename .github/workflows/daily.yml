@@ -160,6 +160,36 @@ jobs:
               print(f"  ⚠️ Kokoro 探针失败语言: {failures}（详见生成步骤日志；不阻断正式流程）")
               raise SystemExit(1)
           KOK
+
+          echo "--- 生产路径探针：app.tts._synth_kokoro（含 MP3 编码 + 时间轴）---"
+          python - <<'PYP'
+          import asyncio
+          from app.tts import _synth_kokoro
+
+          def _fmt(b):
+              if b[:3] == b"ID3" or (len(b) >= 2 and b[0] == 0xFF and (b[1] & 0xE0) == 0xE0):
+                  return "mp3"
+              if b[:4] == b"RIFF":
+                  return "wav"
+              return b[:4].hex()
+
+          fails = []
+          for lang, text in [("en", "Hello! This is Kokoro speaking."), ("ja", "こんにちは。これはテストです。")]:
+              try:
+                  r = asyncio.run(_synth_kokoro(text, lang))
+                  tl = r.timeline_dict()
+                  f = _fmt(r.audio_bytes)
+                  ok = f == "mp3" and len(tl) > 0
+                  print(f"  [{lang}] format={f} bytes={len(r.audio_bytes)} dur={r.duration}s tokens={len(tl)} voice={r.voice} -> {'OK' if ok else 'PROBLEM'}")
+                  if not ok:
+                      fails.append(lang)
+              except Exception as e:
+                  print(f"  [{lang}] 失败: {e!r}")
+                  fails.append(lang)
+          if fails:
+              print(f"  ⚠️ 生产路径探针失败: {fails}")
+              raise SystemExit(1)
+          PYP
           set -e
 
       - name: 组装参数
