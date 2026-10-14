@@ -317,6 +317,44 @@ async def _safe_alt_voices(db: Session, article: Article, *, with_tts: bool = Tr
         return {"status": "failed", "error": type(exc).__name__}
 
 
+async def warmup_recent(
+    db: Session, days: int, end_day: dt.date, *, with_tts: bool = True
+) -> dict[str, Any]:
+    """回填最近 N 天「每日文章」的可选音色（音频缺失重生成 / 时间轴缺失补传）。
+
+    为什么必须有这个口子：日常 run 只为**当天那篇**补音色，历史文章再也碰不到。
+    于是「时间轴改成独立对象」这类改造一上线，此前生成的音色就全部指向一个
+    不存在的 JSON（线上已发布详情里的 timeline_url 全是 404），却没有入口去补。
+    """
+    span = max(1, int(days))
+    stats: dict[str, Any] = {
+        "days": span, "from": end_day.isoformat(), "articles": 0,
+        "generated": 0, "skipped": 0, "failed": 0, "removed": 0,
+        "timeline_uploaded": 0, "items": [],
+    }
+    for i in range(span):
+        d = end_day - dt.timedelta(days=i)
+        article = daily_target(db, d)
+        if article is None:
+            stats["items"].append({"day": d.isoformat(), "status": "no_article"})
+            continue
+        r = await _safe_alt_voices(db, article, with_tts=with_tts)
+        stats["articles"] += 1
+        for k in ("generated", "skipped", "failed", "removed", "timeline_uploaded"):
+            stats[k] += int(r.get(k, 0) or 0)
+        stats["items"].append({
+            "day": d.isoformat(), "article_id": article.id,
+            "status": r.get("status", "?"),
+            "generated": int(r.get("generated", 0) or 0),
+            "timeline_uploaded": int(r.get("timeline_uploaded", 0) or 0),
+            "failed": int(r.get("failed", 0) or 0),
+        })
+    log.info("[alt] 回填最近 %d 天（至 %s）：文章 %d / 新生成 %d / 补时间轴 %d / 失败 %d",
+             span, end_day, stats["articles"], stats["generated"],
+             stats["timeline_uploaded"], stats["failed"])
+    return stats
+
+
 async def run_daily(
     topics: list[str] | None = None,
     per_topic: int | None = None,
@@ -325,6 +363,7 @@ async def run_daily(
     reset_all: bool = False,
     warmup_only: bool = False,
     day_override: dt.date | None = None,
+    warmup_days: int = 0,
 ) -> dict[str, Any]:
     if reset_all:
         raise ValueError("daily does not allow reset; historical content must be preserved")
@@ -343,63 +382,90 @@ async def run_daily(
         db.add(job)
         db.commit()
         try:
-            article = daily_target(db, day)
-            if warmup_only:
-                if article is None:
-                    raise ValueError("no existing article for today's warmup")
+            if warmup_days > 0:
+                # 回填模式：只补最近 N 天「每日文章」的可选音色，
+                # 不抓新闻、不改写、不动默认音频。有增量才重发一次 JSON。
+                bf = await warmup_recent(db, warmup_days, day, with_tts=with_tts)
+                totals["backfill"] = bf
+                if bf.get("generated") or bf.get("timeline_uploaded") or bf.get("removed"):
+                    from .exporter import export_all
+                    export_all(db)
+                    storage = get_storage()
+                    if getattr(storage, "provider", "") == "github":
+                        from .publish import publish_all
+                        pub = publish_all(db=db, storage=storage, topics_days=3,
+                                          commit_msg=f"content: 回填最近 {warmup_days} 天可选音色")
+                        totals.update(publish_ok=bool(pub.get("ok")),
+                                      publish_verify=pub.get("verify"),
+                                      index_rev=pub.get("index_rev", ""))
+                        if not pub.get("ok"):
+                            raise RuntimeError("backfill publication failed")
+                job.status = "success"
             else:
-                raws = []
-                if article is None:
-                    recent = _recent_titles(db, getattr(settings, "dedup_lookback_days", 60))
-                    db.rollback()
-                    raws = await asyncio.to_thread(collect, topics, per_topic, recent, total_limit=1)
-                    totals["fetched"] = len(raws)
-                article, created = _reserve_target(db, day, raws)
-                totals["created"] = int(created)
-                if article is None:
-                    raise ValueError("no usable article for today's release")
-            totals["article_id"] = article.id
-            if not warmup_only:
-                # Serialize recovery of the same reserved article, then re-read completed levels.
-                article = db.scalar(select(Article).where(Article.id == article.id)
-                                    .with_for_update().execution_options(populate_existing=True))
-                stats = await _process_article(db, article, with_tts, force)
-                totals.update(stats)
-                db.commit()
-                if totals["audio_errors"]:
-                    raise RuntimeError("default audio incomplete; rerun resumes missing assets")
-                from .exporter import export_all
-                export_result = export_all(db)
-                totals["export"] = "ok" if export_result.get("exported") else "skipped"
-                storage = get_storage()
-                if getattr(storage, "provider", "") == "github":
-                    from .publish import publish_all
-                    pub = publish_all(db=db, storage=storage, topics_days=3,
-                                      commit_msg=f"content: daily {day} article {article.id}")
-                    totals.update(publish_ok=bool(pub.get("ok")),
-                                  publish_verify=pub.get("verify"), index_rev=pub.get("index_rev", ""))
-                    if not pub.get("ok"):
-                        raise RuntimeError("four-stage publication failed")
-                    try:
-                        totals["git_pruned"] = storage.prune(settings.github_keep_days)["deleted"]
-                    except Exception:
-                        totals["prune"] = "failed"
-                    # 可选音色**放在发布之后**：音色是增强项，绝不能拖累当天内容发布
-                    # （20 份 × 3 次重试最坏可把 job 撑到超时被杀 → 当天不发布）。
-                    # 补完后再发一次：音频在对象存储不进 Git，只需重发 JSON 即可让
-                    # 详情带上 audio.alternates；无新增时不重复发布。
-                    alt = await _safe_alt_voices(db, article, with_tts=with_tts)
-                    totals["alt_voices"] = alt
-                    if alt.get("generated") or alt.get("timeline_uploaded") or alt.get("removed"):
-                        export_all(db)
-                        pub2 = publish_all(db=db, storage=storage, topics_days=3,
-                                           commit_msg=f"content: daily {day} article {article.id}: 可选音色")
-                        totals["alt_publish_ok"] = bool(pub2.get("ok"))
-                        totals["alt_publish_verify"] = pub2.get("verify")
-            if warmup_only:
-                # 仅补可选音色：不抓新闻、不改写、不发布（与 --warmup-only 语义一致）
-                totals["alt_voices"] = await _safe_alt_voices(db, article, with_tts=with_tts)
-            job.status = "success"
+                article = daily_target(db, day)
+                if warmup_only:
+                    if article is None:
+                        raise ValueError("no existing article for today's warmup")
+                else:
+                    raws = []
+                    if article is None:
+                        recent = _recent_titles(db, getattr(settings, "dedup_lookback_days", 60))
+                        db.rollback()
+                        raws = await asyncio.to_thread(collect, topics, per_topic, recent, total_limit=1)
+                        totals["fetched"] = len(raws)
+                    article, created = _reserve_target(db, day, raws)
+                    totals["created"] = int(created)
+                    if article is None:
+                        raise ValueError("no usable article for today's release")
+                totals["article_id"] = article.id
+                if not warmup_only:
+                    # Serialize recovery of the same reserved article, then re-read completed levels.
+                    article = db.scalar(select(Article).where(Article.id == article.id)
+                                        .with_for_update().execution_options(populate_existing=True))
+                    stats = await _process_article(db, article, with_tts, force)
+                    totals.update(stats)
+                    db.commit()
+                    if totals["audio_errors"]:
+                        raise RuntimeError("default audio incomplete; rerun resumes missing assets")
+                    from .exporter import export_all
+                    export_result = export_all(db)
+                    totals["export"] = "ok" if export_result.get("exported") else "skipped"
+                    storage = get_storage()
+                    if getattr(storage, "provider", "") == "github":
+                        from .publish import publish_all
+                        pub = publish_all(db=db, storage=storage, topics_days=3,
+                                          commit_msg=f"content: daily {day} article {article.id}")
+                        totals.update(publish_ok=bool(pub.get("ok")),
+                                      publish_verify=pub.get("verify"), index_rev=pub.get("index_rev", ""))
+                        if not pub.get("ok"):
+                            raise RuntimeError("four-stage publication failed")
+                        try:
+                            totals["git_pruned"] = storage.prune(settings.github_keep_days)["deleted"]
+                        except Exception:
+                            totals["prune"] = "failed"
+                        # 可选音色**放在发布之后**：音色是增强项，绝不能拖累当天内容发布
+                        # （20 份 × 3 次重试最坏可把 job 撑到超时被杀 → 当天不发布）。
+                        # 补完后再发一次：音频在对象存储不进 Git，只需重发 JSON 即可让
+                        # 详情带上 audio.alternates；无新增时不重复发布。
+                        alt = await _safe_alt_voices(db, article, with_tts=with_tts)
+                        totals["alt_voices"] = alt
+                        if alt.get("generated") or alt.get("timeline_uploaded") or alt.get("removed"):
+                            export_all(db)
+                            pub2 = publish_all(db=db, storage=storage, topics_days=3,
+                                               commit_msg=f"content: daily {day} article {article.id}: 可选音色")
+                            totals["alt_publish_ok"] = bool(pub2.get("ok"))
+                            totals["alt_publish_verify"] = pub2.get("verify")
+                            if not pub2.get("ok"):
+                                # 不阻断：内容已发布成功，音色只是增强项。但必须显式报错，
+                                # 否则「详情里没有 alternates」会一直静默到下次常规发布
+                                # （publish_all 会重发最近 3 天，届时自愈）。
+                                totals["alt_publish_error"] = pub2.get("verify") or "unknown"
+                                log.error("[alt] 可选音色补发失败（内容已发布，音色待下次重发自愈）：%s",
+                                          totals["alt_publish_error"])
+                if warmup_only:
+                    # 仅补可选音色：不抓新闻、不改写、不发布（与 --warmup-only 语义一致）
+                    totals["alt_voices"] = await _safe_alt_voices(db, article, with_tts=with_tts)
+                job.status = "success"
         except Exception as exc:
             db.rollback()
             log.exception("[pipe] daily failed")

@@ -297,8 +297,12 @@ def verify_published(
         # 默认音频可达才是内容可用性的底线）。共用 audio_checks 缓存，几乎零成本。
         for alt in ((it.get("audio") or {}).get("alternates") or []):
             voice = alt.get("voice") or "?"
-            for label, u in (("音频", (alt.get("url") or "").strip()),
-                             ("时间轴", (alt.get("timeline_url") or "").strip())):
+            checks = [("音频", (alt.get("url") or "").strip())]
+            # 没词级时间轴就不输出地址（导出时已跳过该字段），自然也不该因此告警；
+            # 反过来，声明了 has_timeline 却给不出地址是真缺陷，必须报出来。
+            if alt.get("has_timeline"):
+                checks.append(("时间轴", (alt.get("timeline_url") or "").strip()))
+            for label, u in checks:
                 if not u:
                     res.alt_audio_errors.append(f"v{vid} 可选音色 {voice} 缺 {label}地址")
                     continue

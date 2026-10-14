@@ -173,9 +173,38 @@ def test_r2_put_read(r2):
     assert r2.read("audio/1/en_a1.mp3") == b"ID3data"
 
 
+def test_local_probe_is_never_unknown(tmp_path: Path):
+    """本地文件系统永远给确定答案（不存在 None）。"""
+    st = LocalStorage(tmp_path)
+    st.put("audio/1/en_a1.mp3", b"ID3")
+    assert st.probe("audio/1/en_a1.mp3") is True
+    assert st.probe("audio/nope.mp3") is False
+
+
 def test_r2_missing_returns_none(r2):
     assert r2.read("audio/nope.mp3") is None
     assert not r2.exists("audio/nope.mp3")
+
+
+def test_r2_probe_distinguishes_unknown_from_absent(r2, monkeypatch):
+    """三条通道全哑时必须返回 None，而不是 False。
+
+    「判断不了」被压成 False 会让下游「对象没了就重做」的逻辑在通道抖动时
+    把整批可选音色全部重新合成一遍（20 份 × 5 级）。
+    """
+    assert r2.probe("audio/nope.mp3") is False          # boto3 明确 404
+    r2.put("audio/1/en_a1.mp3", b"ID3")
+    assert r2.probe("audio/1/en_a1.mp3") is True
+
+    def boom(**kw):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(r2.client, "head_object", boom)
+    monkeypatch.setattr(r2, "_exists_via_cli", lambda key: None)
+    monkeypatch.setattr(r2, "_exists_via_http", lambda key: None)
+    assert r2.probe("audio/1/en_a1.mp3") is None
+    # exists() 仍是二态：判断不了按「不在」处理，保住历史调用方的语义
+    assert r2.exists("audio/1/en_a1.mp3") is False
 
 
 def test_r2_sets_cache_and_content_type(r2):

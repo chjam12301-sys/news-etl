@@ -84,6 +84,11 @@ def init_db() -> None:
             "engine": "VARCHAR(32)",
             "public_url": "TEXT",
         },
+        # 表本身由 create_all 建，但**新增列**仍要 ALTER —— Neon 上
+        # alt_voice_assets 在首次跑时已落地，create_all 不会再动它。
+        "alt_voice_assets": {
+            "timeline_url": "TEXT",
+        },
     }
     with engine.begin() as conn:
         for table, cols in wanted.items():
@@ -252,6 +257,10 @@ class AltVoiceAsset(Base):
 
     file_path: Mapped[str] = mapped_column(Text)
     public_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 词级时间轴对象的**对外 URL**。必须与 public_url 一起存、一起读：
+    # 只用 article_id/level/voice 现拼的话，一旦音频基址改了（换桶/换域名），
+    # 新拼出来的时间轴 URL 会指向新桶，而库里的音频还在旧桶 —— 两者分家。
+    timeline_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
     # 词级时间轴（与默认音色同 schema，供 App 切换音色后继续高亮）

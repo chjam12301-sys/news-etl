@@ -43,6 +43,7 @@ from .audio_store import (
     AUDIO_CONTENT_TYPES,
     get_audio_storage,
     public_audio_url,
+    public_timeline_url,
     sniff_audio,
     timeline_object_key,
 )
@@ -94,10 +95,41 @@ def _refresh_hash(db: Session, version: ArticleVersion) -> None:
     version.content_hash = from_version(version, version.audio, rows)
 
 
+def _object_state(storage, key: str) -> bool | None:
+    """三态：True=对象在 / False=确定不在 / None=判断不了。
+
+    优先 `storage.probe()`（能给 None）；老实现只有 `exists()` 时退回它，
+    但它把「判断不了」压成 False，这里就跟着无法区分了 —— 这是可接受的降级，
+    因为给不出答案时我们只在**幂等的小对象（时间轴）**上按「不在」处理。
+    """
+    if not key:
+        return None
+    probe = getattr(storage, "probe", None)
+    if probe is not None:
+        try:
+            got = probe(key)
+        except Exception:  # noqa: BLE001
+            return None
+        return got if got is None else bool(got)
+    exists = getattr(storage, "exists", None)
+    if exists is not None:
+        try:
+            return bool(exists(key))
+        except Exception:  # noqa: BLE001
+            return None
+    return None
+
+
 def _drop_stale(
     db: Session, version: ArticleVersion, keep: set[str], storage, stats: dict
 ) -> None:
-    """清理已下架的可选音色：DB 行 + 对象存储对象（best-effort）。"""
+    """清理已下架的可选音色：DB 行 + 音频对象 + 时间轴对象（best-effort）。
+
+    顺序是**先提交 DB 删除、再删对象**：
+    - 反过来做的话，一旦后面某一行的 TTS 失败触发 `db.rollback()`，被删掉音频的
+      行会原地复活并继续对外宣称一个已不存在的 URL（死链）；
+    - 先提交后，即使对象删不掉也只是占点空间，DB 行已经不再对外暴露，无正确性风险。
+    """
     stale = [
         r
         for r in db.scalars(
@@ -105,19 +137,32 @@ def _drop_stale(
         )
         if r.voice not in keep
     ]
+    if not stale:
+        return
+    pending: list[tuple[str, str]] = []
     for row in stale:
-        path = row.file_path or ""
+        pending.append(
+            (
+                row.file_path or "",
+                timeline_object_key(version.article_id, version.level_code, row.voice),
+            )
+        )
         db.delete(row)
         stats["removed"] += 1
-        deleter = getattr(storage, "delete", None)
-        if deleter and path:
+    db.commit()
+
+    deleter = getattr(storage, "delete", None)
+    if deleter is None:
+        return
+    for audio_path, tl_key in pending:
+        for key in (audio_path, tl_key):
+            if not key:
+                continue
             try:
-                deleter(path)
+                deleter(key)
             except Exception as exc:  # noqa: BLE001
                 # 对象删不掉只影响空间回收，不影响正确性（DB 行已删，不会再被导出）
-                log.warning("[alt] 删除旧音色对象失败 %s：%s", path, exc)
-    if stale:
-        db.flush()
+                log.warning("[alt] 删除旧音色对象失败 %s：%s", key, exc)
 
 
 async def _one(
@@ -162,6 +207,9 @@ async def _one(
                         pass
             row.file_path = key
             row.public_url = public_audio_url(file_path=key) or ""
+            row.timeline_url = public_timeline_url(
+                version.article_id, version.level_code, voice
+            ) or ""
             row.duration_ms = int(res.duration * 1000)
             row.size_bytes = len(res.audio_bytes)
             row.timeline = timeline
@@ -193,18 +241,15 @@ async def _one(
 def _ensure_timeline(storage, version: ArticleVersion, row: AltVoiceAsset, stats: dict) -> None:
     """自愈：DB 行在、但时间轴对象缺失时补传（**不重新合成**，时间轴就在行里）。
 
-    例：改成"时间轴单独存"之前生成的历史音色，只有音频没有时间轴对象。
-    幂等覆盖，代价只是一次小 PUT。
+    例：改成"时间轴单独存"之前生成的历史音色，只有音频没有时间轴对象 ——
+    线上已发布的详情里 `alternates[].timeline_url` 因此全是 404，
+    必须靠这里补（配合 `--warmup-days N` 回填历史天数）。
+    幂等覆盖，代价只是一次小 PUT；探测不出结果（None）时也补一次，宁可多传。
     """
     key = timeline_object_key(version.article_id, version.level_code, row.voice)
-    exists = getattr(storage, "exists", None)
-    if exists is not None and row.timeline:
-        try:
-            if exists(key):
-                return
-        except Exception:  # noqa: BLE001
-            pass  # 查不到就当作不存在，补传一次
     if not row.timeline:
+        return
+    if _object_state(storage, key) is True:
         return
     try:
         storage.put(
@@ -272,6 +317,14 @@ async def warm_alt_voices(
         for voice in voices:
             row = rows.get(voice)
             if row is not None:
+                # 「有 DB 行」≠「资产还在」：桶被清过 / 换过桶时行在而音频没了，
+                # 对外就是死链。只在**能确定对象不在**时才重做；探测不出结果
+                # （None，三条通道全哑）就维持现状，否则一次网络抖动就会让
+                # 20 份音色全部重新合成一遍。
+                if _object_state(storage, row.file_path or "") is False:
+                    log.warning("[alt] %s/%s 音频对象缺失，重新合成", version.level_code, voice)
+                    await _one(db, version, voice, storage, stats)
+                    continue
                 stats["skipped"] += 1
                 _ensure_timeline(storage, version, row, stats)
                 continue

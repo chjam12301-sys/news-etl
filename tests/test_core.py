@@ -212,6 +212,8 @@ def test_offline_low_level_is_shorter():
     (b"\xff\xfb\x90\x00", "mp3"),         # 无 ID3 的裸 MP3 帧同步
     (b"\xff\xe0\x00\x00", "mp3"),
     (b"RIFF\x24\x00\x00\x00WAVEfmt ", "wav"),
+    (b"RIFF\x24\x00\x00\x00AVI LIST", ""),   # RIFF 只是容器，AVI/WEBP 也是 → 不能当 wav
+    (b"RIFF\x24\x00", ""),                   # 截断的 RIFF：读不到 WAVE 标记
     (b"\x00\x01\x02\x03\x04", ""),        # 无法识别 → 必须判失败，不能猜
     (b"", ""),
 ])

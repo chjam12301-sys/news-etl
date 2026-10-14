@@ -29,6 +29,9 @@ def main() -> int:
     d.add_argument("--force", action="store_true", help="仅补当前发行日缺失译文，不新增文章")
     d.add_argument("--warmup-only", action="store_true", help="只补今日已有文章的可选音色")
     d.add_argument("--date", help="回填指定发行日 YYYY-MM-DD 缺失的音频（留空=今天）")
+    d.add_argument("--warmup-days", type=int, default=0,
+                   help="回填最近 N 天（含 --date 当日）每日文章的可选音色："
+                        "音频缺失重生成、时间轴对象缺失补传。不抓新闻、不改写、不动默认音频")
 
     sub.add_parser("serve", help="启动 API 服务")
 
@@ -46,6 +49,7 @@ def main() -> int:
                 force=a.force,
                 warmup_only=a.warmup_only,
                 day_override=day_override,
+                warmup_days=a.warmup_days,
             )
         )
         print(json.dumps(res, ensure_ascii=False, indent=2))

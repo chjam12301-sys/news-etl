@@ -37,6 +37,16 @@ class Storage(Protocol):
 
     def exists(self, key: str) -> bool: ...
 
+    def probe(self, key: str) -> bool | None:
+        """三态探测：True=在 / False=确定不在 / None=判断不了。
+
+        `exists()` 把「判断不了」也压成 False，而「判断不了就当不在」在
+        「对象没了就重新生成」这类逻辑里会引发全量重做（R2 三条探测通道
+        全哑时，20 份音色会被判成全部缺失 → 每次跑都重合成一遍）。
+        需要区分的调用方请用 probe。
+        """
+        ...
+
     def read(self, key: str) -> bytes | None: ...
 
     def delete(self, key: str) -> None: ...
@@ -82,6 +92,10 @@ class LocalStorage:
         return StoredObject(key=key, size=len(data), url=f"/files/{key}")
 
     def exists(self, key: str) -> bool:
+        return self._p(key).is_file()
+
+    def probe(self, key: str) -> bool | None:
+        """本地文件系统永远是确定答案（不存在 None）。"""
         return self._p(key).is_file()
 
     def read(self, key: str) -> bytes | None:
@@ -373,12 +387,16 @@ class R2Storage:
         except Exception:  # noqa: BLE001
             return None
 
-    def exists(self, key: str) -> bool:
+    def probe(self, key: str) -> bool | None:
         """探测对象是否存在。
 
         boto3 只把 ClientError 当「不存在」，但 SSL/连接类错误是
         BotoCoreError，会直接抛出去 —— 曾导致迁移脚本在探测阶段全灭。
         因此这里逐级兜底：boto3 → aws cli → 公开 URL。
+
+        三条通道都给不出答案时返回 **None**（不是 False）：
+        「判断不了」与「确定不在」必须分开，否则下游「对象没了就重做」
+        的逻辑会在通道全哑时把整批资产重做一遍。
         """
         if not self._tls_broken:
             from botocore.exceptions import ClientError
@@ -399,7 +417,11 @@ class R2Storage:
             got = probe(key)
             if got is not None:
                 return got
-        return False
+        return None
+
+    def exists(self, key: str) -> bool:
+        # 与历史语义一致：判断不了时按「不在」处理（二态调用方拿不到 None）。
+        return self.probe(key) is True
 
     def read(self, key: str) -> bytes | None:
         from botocore.exceptions import ClientError

@@ -163,6 +163,54 @@ async def test_warmup_only_does_not_process_or_publish(sessions, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_warmup_days_backfills_recent_articles_only(sessions, monkeypatch):
+    """`--warmup-days N` 是历史缺口的回填口子：只补最近 N 天的可选音色，
+    不抓新闻、不改写、不动默认音频。没有文章的那天跳过而不是报错。
+
+    为什么必须有它：日常 run 只碰当天那篇，历史文章的 timeline_url 一旦
+    404（音色在「时间轴独立存」改造之前生成）就永远没人补。
+    """
+    day = dt.date(2026, 10, 14)
+    with sessions() as db:
+        a_today = add_article(db, day, title="Today story")
+        a_y1 = add_article(db, day - dt.timedelta(days=1), title="Yesterday story")
+        wanted = sorted([a_today.id, a_y1.id])
+    monkeypatch.setattr(pipeline, "SessionLocal", sessions)
+    monkeypatch.setattr(pipeline, "init_db", lambda: None)
+    monkeypatch.setattr(pipeline, "collect", Mock(side_effect=AssertionError("must not fetch")))
+    monkeypatch.setattr(pipeline, "_process_article", AsyncMock(side_effect=AssertionError("must not rewrite")))
+    # 有增量才重发一次 JSON（音频在对象存储不进 Git，重发的是详情里的 alternates）
+    from app import exporter, publish
+    monkeypatch.setattr(pipeline, "get_storage",
+                        lambda: SimpleNamespace(provider="github", prune=lambda n: {"deleted": 0}))
+    export = Mock(return_value={"exported": True})
+    monkeypatch.setattr(exporter, "export_all", export)
+    pub = Mock(return_value={"ok": True, "verify": "校验通过"})
+    monkeypatch.setattr(publish, "publish_all", pub)
+
+    seen: list[int] = []
+
+    async def fake_warm(db, article, *, with_tts=True):
+        seen.append(article.id)
+        return {"generated": 0, "timeline_uploaded": 20, "removed": 0, "status": "ok"}
+
+    monkeypatch.setattr(alt_voices, "warm_alt_voices", fake_warm)
+
+    result = await pipeline.run_daily(warmup_days=3, day_override=day)
+    assert result["status"] == "success"
+    bf = result["stats"]["backfill"]
+    # 3 天窗口里有 2 天有文章，第 3 天没有 → 跳过而不是失败
+    assert bf["articles"] == 2 and bf["timeline_uploaded"] == 40
+    assert sorted(seen) == wanted
+    assert sum(1 for i in bf["items"] if i.get("status") == "no_article") == 1
+    assert "article_id" not in result["stats"]
+    # 补到了东西 → 重导出 + 重发一次
+    assert result["stats"]["publish_ok"] is True
+    export.assert_called_once()
+    assert "回填" in pub.call_args.kwargs["commit_msg"]
+
+
+@pytest.mark.asyncio
 async def test_reset_rejected():
     with pytest.raises(ValueError):
         await pipeline.run_daily(reset_all=True)
@@ -259,12 +307,71 @@ async def test_alt_voices_skip_guards_and_prune_stale(sessions, monkeypatch):
         add_versions(db, article, codes={"en_a1"}, with_audio=True)
         await av.warm_alt_voices(db, article, storage=storage)
         assert db.scalar(select(AltVoiceAsset).where(AltVoiceAsset.voice == "af_bella"))
-        # 清单改名 → 旧音色下架：DB 行与对象都清掉
+        # 清单改名 → 旧音色下架：**音频对象与时间轴对象都要删**，
+        # 且 DB 行的删除必须先提交（否则后续某份音色的 rollback 会让行复活，
+        # 而它的音频已经被删了 → 对外死链）。
         monkeypatch.setattr(av, "alt_voices", lambda: ("bf_emma",))
         s = await av.warm_alt_voices(db, article, storage=storage)
         assert s["removed"] == 1 and s["generated"] == 1
         assert db.scalar(select(AltVoiceAsset).where(AltVoiceAsset.voice == "af_bella")) is None
-        assert delete.called
+        deleted = {c.args[0] for c in delete.call_args_list}
+        assert f"audio/{article.id}/en_a1_af_bella.mp3" in deleted
+        assert f"timeline/{article.id}/en_a1_af_bella.json" in deleted
+        # 提交已落：模拟「后面某一份音色失败触发回滚」，行不能复活
+        db.rollback()
+        assert db.scalar(select(AltVoiceAsset).where(AltVoiceAsset.voice == "af_bella")) is None
+
+
+@pytest.mark.asyncio
+async def test_alt_voices_regenerates_when_audio_object_is_gone(sessions, monkeypatch):
+    """DB 行在、但对象存储的音频确实没了（桶被清/换桶）→ 必须重新合成。
+
+    反向约束：只有**确定不在**才重做；probe 返回 None（三条通道都判断不了）
+    时要维持现状，否则一次网络抖动就会让 20 份音色全部重新合成。
+    """
+    from app import alt_voices as av
+    from app.db import AltVoiceAsset
+
+    monkeypatch.setattr(av.settings, "tts_enabled", True)
+    monkeypatch.setattr(av, "_engine", lambda: "kokoro")
+    monkeypatch.setattr(av, "alt_voices", lambda: ("af_bella",))
+    synth = AsyncMock(return_value=SimpleNamespace(
+        audio_bytes=b"ID3xxxx", duration=1.0, engine="kokoro",
+        timeline_dict=lambda: [{"i": 0}]))
+    monkeypatch.setattr(av, "synthesize", synth)
+    monkeypatch.setattr(av, "_sleep", AsyncMock())
+    storage = SimpleNamespace(put=Mock(), delete=Mock(), probe=lambda key: False)
+
+    with sessions() as db:
+        article = add_article(db, title="Lost audio object story")
+        add_versions(db, article, codes={"en_a1"}, with_audio=True)
+        v = db.scalar(select(ArticleVersion).where(
+            ArticleVersion.level_code == "en_a1", ArticleVersion.article_id == article.id))
+        db.add(AltVoiceAsset(version_id=v.id, voice="af_bella",
+                             file_path=f"audio/{article.id}/en_a1_af_bella.mp3",
+                             duration_ms=1000, size_bytes=100,
+                             timeline=[{"i": 0}], engine="kokoro"))
+        db.commit()
+        s = await av.warm_alt_voices(db, article, storage=storage)
+        assert s["generated"] == 1 and s["skipped"] == 0
+        synth.assert_awaited_once()
+
+    # 判断不了（None）→ 不重做，也不算「跳过就万事大吉」地假装资产齐全
+    storage_unknown = SimpleNamespace(put=Mock(), delete=Mock(), probe=lambda key: None)
+    with sessions() as db:
+        article = add_article(db, title="Unknown audio state story")
+        add_versions(db, article, codes={"en_a1"}, with_audio=True)
+        v = db.scalar(select(ArticleVersion).where(
+            ArticleVersion.level_code == "en_a1", ArticleVersion.article_id == article.id))
+        db.add(AltVoiceAsset(version_id=v.id, voice="af_bella",
+                             file_path=f"audio/{article.id}/en_a1_af_bella.mp3",
+                             duration_ms=1000, size_bytes=100,
+                             timeline=[{"i": 0}], engine="kokoro"))
+        db.commit()
+        synth.reset_mock()
+        s = await av.warm_alt_voices(db, article, storage=storage_unknown)
+        assert s["generated"] == 0 and s["skipped"] == 1
+        synth.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -279,14 +386,19 @@ async def test_alt_voices_self_heals_missing_timeline_object(sessions, monkeypat
     synth = AsyncMock(side_effect=AssertionError("must not re-synthesize"))
     monkeypatch.setattr(av, "synthesize", synth)
     put = Mock()
-    storage = SimpleNamespace(put=put, delete=Mock(), exists=lambda key: False)
+    # 音频对象在、时间轴对象不在 —— 只有后者需要补（probe 给三态，
+    # 这里模拟真实历史数据：音频是当年传的，时间轴对象从没传过）
+    present: set[str] = set()
+    storage = SimpleNamespace(put=put, delete=Mock(), probe=lambda key: key in present)
 
     with sessions() as db:
         article = add_article(db, title="Self heal timeline story")
         add_versions(db, article, codes={"en_a1"}, with_audio=True)
         v = db.scalar(select(ArticleVersion).where(ArticleVersion.level_code == "en_a1"))
+        audio_path = f"audio/{article.id}/en_a1_af_bella.mp3"
+        present.add(audio_path)
         db.add(AltVoiceAsset(version_id=v.id, voice="af_bella",
-                             file_path=f"audio/{article.id}/en_a1_af_bella.mp3",
+                             file_path=audio_path,
                              duration_ms=1000, size_bytes=100,
                              timeline=[{"i": 0, "w": "x", "cs": 0, "ce": 1}], engine="kokoro"))
         db.commit()
@@ -333,6 +445,40 @@ def test_exporter_exposes_timeline_url_and_never_inlines_it(monkeypatch, session
         db.commit()
         size_small = len(json.dumps(exporter._version_detail(v, article, base="", rev=""), ensure_ascii=False))
         assert abs(size_big - size_small) < 300
+
+
+def test_exporter_timeline_url_follows_stored_value(sessions, monkeypatch):
+    """没有词级时间轴就不给地址（否则 App 去拉必然 404 的 JSON）；
+    有则以**库里存的 URL** 为准 —— 现拼的话，换桶后新拼的时间轴会指向新桶，
+    而音频还在旧桶，两者分家。"""
+    from app import exporter
+    from app.db import AltVoiceAsset
+
+    monkeypatch.setattr(exporter, "public_audio_url",
+                        lambda **kw: "https://cdn.test/" + (kw.get("file_path") or ""))
+    monkeypatch.setattr(exporter, "public_timeline_url",
+                        lambda aid, code, voice: f"https://cdn.test/timeline/{aid}/{code}_{voice}.json")
+    with sessions() as db:
+        article = add_article(db, title="No timeline story")
+        add_versions(db, article, codes={"en_a1"}, with_audio=True)
+        v = db.scalar(select(ArticleVersion).where(
+            ArticleVersion.level_code == "en_a1", ArticleVersion.article_id == article.id))
+        db.add(AltVoiceAsset(version_id=v.id, voice="af_bella",
+                             file_path=f"audio/{article.id}/en_a1_af_bella.mp3",
+                             duration_ms=1000, size_bytes=100, timeline=[], engine="kokoro"))
+        db.commit()
+
+        (alt,) = exporter._audio_meta(v, base="", rev="")["alternates"]
+        assert alt["has_timeline"] is False
+        assert "timeline_url" not in alt
+
+        row = db.scalar(select(AltVoiceAsset))
+        row.timeline = [{"i": 0, "w": "x", "cs": 0, "ce": 1}]
+        row.timeline_url = "https://old-bucket.test/timeline/x.json"
+        db.commit()
+        (alt,) = exporter._audio_meta(v, base="", rev="")["alternates"]
+        assert alt["has_timeline"] is True
+        assert alt["timeline_url"] == "https://old-bucket.test/timeline/x.json"
 
 
 def test_date_repair_exact_match_and_dry(sessions):

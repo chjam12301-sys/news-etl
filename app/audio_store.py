@@ -54,7 +54,9 @@ def sniff_audio(data: bytes) -> str:
     # 无 ID3 的裸 MP3 帧同步：11 位全 1（0xFF 0xE?）
     if len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0:
         return "mp3"
-    if data[:4] == b"RIFF":
+    # RIFF 只是容器头，真正标格式的是第 8 字节起的 "WAVE"（AVI/WEBP 也是
+    # RIFF）。只看前 4 字节会把这些当成 wav 传上去。
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE":
         return "wav"
     if data[4:8] == b"ftyp":
         return "m4a"

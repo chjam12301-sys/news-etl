@@ -76,7 +76,7 @@ def _audio_meta(v: ArticleVersion, base: str, rev: str = "") -> dict[str, Any] |
         alt_url = alt.public_url or public_audio_url(file_path=alt.file_path or "")
         if not alt_url:
             continue
-        alts.append({
+        item = {
             "voice": alt.voice,
             "url": alt_url,
             "duration": round(alt.duration_ms / 1000, 3),
@@ -84,8 +84,15 @@ def _audio_meta(v: ArticleVersion, base: str, rev: str = "") -> dict[str, Any] |
             "engine": alt.engine,
             "word_count": len(alt.timeline or []),
             "has_timeline": bool(alt.timeline),
-            "timeline_url": public_timeline_url(v.article_id, v.level_code, alt.voice),
-        })
+        }
+        # 只有真有词级时间轴才给地址 —— 否则 App 会去拉一个必然 404 的 JSON。
+        # URL 以库里存的为准（生成时与音频同一基址写死），现拼只是历史行的兜底。
+        if alt.timeline:
+            item["timeline_url"] = (
+                alt.timeline_url
+                or public_timeline_url(v.article_id, v.level_code, alt.voice)
+            )
+        alts.append(item)
     if alts:
         meta["alternates"] = alts
     return meta

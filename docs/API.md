@@ -46,6 +46,9 @@ alternates[i].timeline_url = "https://<base>/timeline/{article_id}/{level_code}_
 
 内容是**词级数组**，与顶层 `timeline` 完全同 schema（`i/w/cs/ce/sm/em/si`）。
 
+> `timeline_url` **只在 `has_timeline` 为 true 时出现**。没有词级时间轴的可选音色
+> 不会输出该字段（否则 App 会去拉一个必然 404 的 JSON）——判据用 `has_timeline`。
+
 > 为什么不给内联：4 份时间轴会让最大等级（en_c1）的详情从 ~59KB 涨到 ~217KB，
 > 而用户绝大多数时候**不会切音色** —— 内联等于让所有人每次下详情都多付 3~4 倍流量。
 
