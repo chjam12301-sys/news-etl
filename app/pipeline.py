@@ -307,11 +307,16 @@ async def run_daily(
     force: bool = False,
     reset_all: bool = False,
     warmup_only: bool = False,
+    day_override: dt.date | None = None,
 ) -> dict[str, Any]:
     if reset_all:
         raise ValueError("daily does not allow reset; historical content must be preserved")
     started = dt.datetime.now(dt.timezone.utc)
-    day = release_day(started)
+    day = day_override or release_day(started)
+    if day_override is not None:
+        # 回填模式：只补指定发行日缺失的音频，不新增文章（daily_target 命中当天既有文章即
+        # 不做抓取；_process_article 只补 audio is None 的版本）。
+        log.info("[pipe] 回填模式：目标发行日 %s（默认今天 %s）", day, release_day(started))
     init_db()
     totals: dict[str, Any] = {"fetched": 0, "created": 0, "versions": 0, "audios": 0,
                               "audio_errors": 0, "skipped": 0, "release_date": day.isoformat()}

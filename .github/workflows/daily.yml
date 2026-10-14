@@ -17,6 +17,9 @@ on:
         description: '只补今日已有文章的四种音色，不生成/发布文章'
         required: false
         default: 'false'
+      date:
+        description: '回填指定发行日 YYYY-MM-DD（留空=今天；补历史某天缺失的音频）'
+        required: false
 
 # Free 计划同一时间只允许 1 个并发
 concurrency:
@@ -198,11 +201,13 @@ jobs:
           IN_TOPICS: ${{ inputs.topics }}
           IN_FORCE: ${{ inputs.force }}
           IN_WARMUP_ONLY: ${{ inputs.warmup_only }}
+          IN_DATE: ${{ inputs.date }}
         run: |
           ARGS="daily"
           if [ -n "${IN_TOPICS}" ]; then ARGS="$ARGS --topics ${IN_TOPICS}"; fi
           if [ "${IN_FORCE}" = "true" ]; then ARGS="$ARGS --force"; fi
           if [ "${IN_WARMUP_ONLY}" = "true" ]; then ARGS="$ARGS --warmup-only"; fi
+          if [ -n "${IN_DATE}" ]; then ARGS="$ARGS --date ${IN_DATE}"; fi
           echo "args=$ARGS" >> "$GITHUB_OUTPUT"
           echo "将要执行: python -m app.cli $ARGS"
 

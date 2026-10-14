@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import logging
 import asyncio
+import datetime as dt
 import json
 import sys
 
@@ -27,6 +28,7 @@ def main() -> int:
     d.add_argument("--no-tts", action="store_true")
     d.add_argument("--force", action="store_true", help="仅补当前发行日缺失译文，不新增文章")
     d.add_argument("--warmup-only", action="store_true", help="只补今日已有文章的可选音色")
+    d.add_argument("--date", help="回填指定发行日 YYYY-MM-DD 缺失的音频（留空=今天）")
 
     sub.add_parser("serve", help="启动 API 服务")
 
@@ -35,6 +37,7 @@ def main() -> int:
     if a.cmd == "daily":
         from .pipeline import run_daily
 
+        day_override = dt.date.fromisoformat(a.date) if a.date else None
         res = asyncio.run(
             run_daily(
                 topics=[t.strip() for t in a.topics.split(",")] if a.topics else None,
@@ -42,6 +45,7 @@ def main() -> int:
                 with_tts=not a.no_tts,
                 force=a.force,
                 warmup_only=a.warmup_only,
+                day_override=day_override,
             )
         )
         print(json.dumps(res, ensure_ascii=False, indent=2))
