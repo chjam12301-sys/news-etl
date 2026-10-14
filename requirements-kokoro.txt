@@ -1,15 +1,19 @@
 # Kokoro OSS TTS（CI 内自托管，免费不绑卡，替代被微软 403 封锁的 edge-tts）
 # 仅当 TTS_ENGINE=kokoro 时需要。torch 仅 CPU。
 #
-# ⚠️ 必须锁版本：kokoro 0.7.x 对 transformers / torch 的声明是无上限的
-# （Requires-Dist: torch / transformers，无任何版本约束）。若放任 pip 拉最新，
-# 会装到 transformers 5.x + torch 2.14，而 kokoro 的 self.bert（BertModel）调用
-# 在 transformers 5.x 下会触发 `Boolean value of Tensor with more than one value
-# is ambiguous`（多元素张量被当作 bool 判断），导致合成随机崩（部分英文 chunk /
-# 全部日文）。锁到 kokoro 0.7.16 同代（torch 2.5 + transformers 4.46）即可规避。
+# ⚠️ 锁版本：kokoro 0.7.x 对 torch / transformers 的声明无版本上限，放任 pip 会拉到
+# 与它不同代的新版本，行为不可预期。锁到 kokoro 0.7.16 同代（torch 2.5 / transformers 4.46）。
 torch==2.5.1
 transformers==4.46.3
 kokoro==0.7.16
 misaki[en,ja]==0.9.4
 soundfile==0.14.0
 numpy==1.26.4
+#
+# 日文 G2P：misaki 的 JAG2P → cutlet → fugashi.Tagger() 需要 MeCab 词典。
+# misaki[ja] 依赖的是 `unidic` 空壳包（词典要另跑 `python -m unidic download`
+# 再下 ~770MB），但 fugashi 会「优先 import unidic」，其词典目录缺 mecabrc 时直接报
+# "Failed initializing MeCab"。改用随包分发的 unidic-lite（~50MB，自带 mecabrc）更轻；
+# fugashi 在 unidic 缺失时回退 unidic-lite，故 CI 装完必须 `pip uninstall -y unidic`
+# （见 daily.yml 安装步骤）。
+unidic-lite==1.0.8

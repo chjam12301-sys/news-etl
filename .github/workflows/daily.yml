@@ -43,7 +43,13 @@ jobs:
           cache: pip
 
       - name: 安装依赖
-        run: pip install -r requirements.txt && pip install -r requirements-kokoro.txt
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-kokoro.txt
+          # fugashi 会「优先 import unidic」，而 misaki[ja] 拉的 unidic 是空壳包
+          # （词典需另下 ~770MB，缺失时 fugashi 直接报 Failed initializing MeCab）。
+          # 卸载它，让 fugashi 回退到随包分发的 unidic-lite（自带 mecabrc），日文 G2P 才能起。
+          pip uninstall -y unidic || true
 
       - name: 网络与依赖自检
         run: |
@@ -129,7 +135,13 @@ jobs:
                               print(f"  [{lang_code}] token.text={t.text!r} start_ts={getattr(t,'start_ts',None)} end_ts={getattr(t,'end_ts',None)} ws={getattr(t,'whitespace','')!r}")
                               shown += 1
                           break
-                  alen = sum(len(getattr(r, 'audio', []) or []) for r in results)
+                  # 注意：不能写 `getattr(r,'audio',[]) or []` —— Kokoro 的 audio 是
+                  # 多元素张量，`tensor or []` 会触发 bool(张量) 的
+                  # "Boolean value of Tensor ... is ambiguous"，是探针自身的 bug（非 Kokoro）。
+                  alen = 0
+                  for r in results:
+                      _a = getattr(r, "audio", None)
+                      alen += 0 if _a is None else len(_a)
                   ok = alen > 0
                   print(f"  [{lang_code}] chunks={len(results)} audio_samples={alen} -> {'Kokoro OK' if ok else 'NO AUDIO'}")
                   if not ok:
