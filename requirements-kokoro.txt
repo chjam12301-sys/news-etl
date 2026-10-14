@@ -3,7 +3,11 @@
 #
 # ⚠️ 锁版本：kokoro 0.7.x 对 torch / transformers 的声明无版本上限，放任 pip 会拉到
 # 与它不同代的新版本，行为不可预期。锁到 kokoro 0.7.16 同代（torch 2.5 / transformers 4.46）。
-torch==2.5.1
+#
+# torch 用 CPU-only 构建：CI 是 CPU runner，装默认的 PyPI torch 会拖 ~900MB 主包
+# 外加一整套 nvidia-cuda-* 依赖（白装、拖慢每次 CI）。+cpu 版体积约 1/5 且无 CUDA 依赖。
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
 transformers==4.46.3
 kokoro==0.7.16
 misaki[en,ja]==0.9.4

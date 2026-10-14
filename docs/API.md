@@ -8,6 +8,7 @@
 
 | 版本 | 日期 | 状态 | 摘要 |
 |---|---|---|---|
+| **v2.8** | 2026-10-14 | ✅ 可用 | 🔴 **换 TTS 引擎（必读）**：edge-tts → Kokoro OSS；`audio.voice` 取值改为 `af_heart`（英）/ `jf_alpha`（日），音频仍为 `.mp3`（48kbps mono），`timeline` 字段与语义不变 |
 | **v2.7** | 2026-10-09 | ✅ 可用 | 🔴 **封面图与署名（必读）**：配图改多级图源优先 Unsplash；`image` 增 `provider` / `author` / `source` / `source_url` / `fallback` |
 | **v2.6** | 2026-10-09 | ✅ 可用 | 🔴 **音频地址换域名**：由 `cdn.jsdelivr.net` 改为 `pub-aba43a6fb1db4dc08fede1dbc81f3241.r2.dev`（对象存储） |
 | **v2.5** | 2026-10-08 | ✅ 可用 | 新增 `has_translation`，明确告知译文是否可用 |
@@ -17,6 +18,57 @@
 | **v2.1** | 2026-10-07 | ✅ 可用 | CDN 链接从写死 SHA 改为运行时查询（修「详情无时间轴」） |
 
 > 字段只增不改，**v2.0 的客户端代码无需修改即可跑在 v2.2 上**。
+
+---
+
+## 📌 v2.8 · 换 TTS 引擎：edge-tts → Kokoro OSS（🔴 必读）
+
+**合成引擎从微软 edge-tts 换成了 CI 内自托管的 Kokoro OSS。`audio.voice` 的取值变了、
+音频听感也变了；但 `timeline` 的字段与语义完全不变，App 的高亮/跟读逻辑无需改动。**
+
+| | 旧（v2.7 及以前） | 新（v2.8） |
+|---|---|---|
+| 引擎 | 微软 edge-tts（云端在线） | Kokoro-82M OSS（CI 内自托管推理） |
+| `audio.engine` | `edge-tts` | `kokoro` |
+| 音色（英） | `en-US-AriaNeural` | `af_heart` |
+| 音色（日） | `ja-JP-NanamiNeural` | `jf_alpha` |
+| 音频格式 | MP3，24kbps mono | **MP3，48kbps mono**（`.mp3` 后缀不变） |
+| `timeline` | 词级（`cs/ce/s/e/w`） | **同结构、同语义**（切词粒度可能略有差异） |
+| 其余字段 | — | 一律不变 |
+
+**为什么要换**
+
+edge-tts 依赖微软的在线语音服务，在 **GitHub Actions（数据中心 IP）实测被 `403` 拒绝**
+（微软对数据中心出口做风控），线上无法稳定产出音频。Kokoro 是本地推理的开源模型，
+不调任何外部 TTS 服务，从根上消除了这个单点。
+
+**硬约束**
+
+1. 音频一律 **MP3 48kbps 单声道**（控体积与流量，勿要求无损/高码率）；
+2. `timeline[i]` 仍是 `{cs, ce, s, e, w, si}`，**字段只增不改**，App 高亮/跟读无需改；
+3. `audio.url` 仍是 R2 地址、仍以 **`.mp3`** 结尾 —— 白名单与拼地址规则都不变。
+
+**一次性影响**：因音色/音频变化，所有版本的 `content_hash` 会刷新，App 会判定「内容已更新」
+并重新拉取一次音频（属预期、一次性）。
+
+**App 侧要做的**
+
+1. **不要写死 `engine` / `voice` 取值**。若代码里用 `edge-tts` / `en-US-AriaNeural` /
+   `ja-JP-NanamiNeural` 做展示或缓存 key，改为读接口返回的 `audio.engine` / `audio.voice`；
+2. 音频**听感会变**（换了发音人），属预期，QA 按新音色验收；
+3. 时间轴相关代码**不用动**。
+
+**上线顺序**
+
+```
+后端切 Kokoro（已上线）  →  App 只要没写死旧音色名，就无需任何改动
+```
+
+**后端已替你做好的**
+
+- 音频统一压成 MP3（体积约为原始 WAV 的 1/8），`duration` / `word_count` 与实际音频一致；
+- 英文、日文**都产出词级**时间轴（日文此前依赖微软分词，现由 Kokoro/misaki 分词，切分更贴近原文词块）；
+- `audio.url` 继续走 R2 对象存储，`.mp3` 后缀不变。
 
 ---
 
@@ -559,8 +611,8 @@ const item = day.versions.ja.ja_n3.find(x => x.article_id === currentId);
     "url": "https://pub-aba43a6fb1db4dc08fede1dbc81f3241.r2.dev/audio/1/en_a1.mp3",
     "duration": 73.587,
     "size_bytes": 445248,
-    "engine": "edge-tts",
-    "voice": "en-US-AriaNeural",
+    "engine": "kokoro",
+    "voice": "af_heart",
     "word_count": 189,
     "has_timeline": true
   },
@@ -862,9 +914,10 @@ function render(detail, t) {
 | 项 | 值 |
 |---|---|
 | 路径 | `/audio/{article_id}/{level_code}.mp3` |
-| 格式 | MP3，edge-tts，24kbps mono |
-| 音色（英） | `en-US-AriaNeural` |
-| 音色（日） | `ja-JP-NanamiNeural` |
+| 格式 | MP3，Kokoro OSS，48kbps mono |
+| `audio.engine` | `kokoro` |
+| 音色（英） | `af_heart` |
+| 音色（日） | `jf_alpha` |
 | 实测时长 | en_a1 74s / en_b2 128s / en_c1 165s / ja_n5 98s / ja_n1 355s |
 | Range 请求 | ✅ 支持（可拖动进度条） |
 
@@ -959,8 +1012,8 @@ App 启动
     "url": "https://pub-aba43a6fb1db4dc08fede1dbc81f3241.r2.dev/audio/8/en_a1.mp3",
     "duration": 54.925,
     "size_bytes": 333216,
-    "engine": "edge-tts",
-    "voice": "en-US-AriaNeural",
+    "engine": "kokoro",
+    "voice": "af_heart",
     "word_count": 149,
     "has_timeline": true
   },

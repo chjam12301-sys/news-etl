@@ -197,7 +197,12 @@ async def _process_article(
                 continue
             try:
                 res = await synthesize(version.body, version.lang)
-                is_mp3 = res.audio_bytes[:3] == b"ID3" or res.engine == "edge-tts"
+                _b = res.audio_bytes
+                # MP3 可能是 ID3 开头，也可能直接是帧同步（0xFF 0xE?，ffmpeg 默认如此）
+                _mp3_sig = _b[:3] == b"ID3" or (
+                    len(_b) >= 2 and _b[0] == 0xFF and (_b[1] & 0xE0) == 0xE0
+                )
+                is_mp3 = _mp3_sig or res.engine == "edge-tts"
                 ext = "mp3" if is_mp3 else "wav"
                 key = audio_key(version.article_id, version.level_code, ext)
                 obj = storage.put(
