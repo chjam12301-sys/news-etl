@@ -126,7 +126,14 @@ jobs:
           ]:
               try:
                   pipe = KPipeline(lang_code=lang_code)
-                  results = list(pipe(text, voice=voice))
+                  if lang_code == "j":
+                      # 与 app.tts 一致：日文走 token API（misaki pyopenjtalk 分词 →
+                      # generate_from_tokens），否则拿不到 start_ts/end_ts。
+                      from misaki import ja
+                      _, tks = ja.JAG2P(version="pyopenjtalk")(text)
+                      results = list(pipe.generate_from_tokens(tks, voice=voice))
+                  else:
+                      results = list(pipe(text, voice=voice))
                   shown = 0
                   for r in results:
                       toks = getattr(r, "tokens", None)
@@ -142,8 +149,8 @@ jobs:
                   for r in results:
                       _a = getattr(r, "audio", None)
                       alen += 0 if _a is None else len(_a)
-                  ok = alen > 0
-                  print(f"  [{lang_code}] chunks={len(results)} audio_samples={alen} -> {'Kokoro OK' if ok else 'NO AUDIO'}")
+                  ok = alen > 0 and shown > 0
+                  print(f"  [{lang_code}] chunks={len(results)} audio_samples={alen} tokens={shown} -> {'Kokoro OK' if ok else 'NO AUDIO/TOKENS'}")
                   if not ok:
                       failures.append(lang_code)
               except Exception as e:

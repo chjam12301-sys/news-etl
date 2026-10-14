@@ -427,6 +427,24 @@ def _get_kokoro_pipeline(lang_code: str):
     return _KOKORO_PIPELINES[lang_code]
 
 
+# 日文分词器（进程内复用）：kokoro 0.7.x 内置的 ja.JAG2P() 走 cutlet，其 __call__
+# 返回 (phonemes, None)，而 kokoro 的日文分支写成 `ps = self.g2p(text)`（把元组当字符串
+# 直接喂给模型）→ 产出的日文音频近乎静音、且不带任何 token 时间戳。
+# 这里改用 misaki 的 pyopenjtalk 版 JAG2P：它返回 (phonemes, List[MToken])，token 与
+# kokoro 的 join_timestamps/generate_from_tokens 同构，可据此重建日文词级时间轴；
+# 且该路径不依赖 fugashi/MeCab。
+_JA_G2P: Any = None
+
+
+def _get_ja_g2p():
+    global _JA_G2P
+    if _JA_G2P is None:
+        from misaki import ja
+
+        _JA_G2P = ja.JAG2P(version="pyopenjtalk")
+    return _JA_G2P
+
+
 async def _synth_kokoro(text: str, lang: str) -> TTSResult:
     """Kokoro OSS 合成：返回 WAV 音频 + 词级 boundaries，复用下游 _map_boundaries_to_text。
 
@@ -451,7 +469,15 @@ async def _synth_kokoro(text: str, lang: str) -> TTSResult:
         chunks_audio: list[np.ndarray] = []
         boundaries: list[dict[str, Any]] = []
         offset_sec = 0.0
-        for result in pipeline(spoken, voice=voice):
+        if lang == "ja":
+            # 日文必须走 token API：misaki(pyopenjtalk) 分词 → kokoro 逐 token 合成。
+            # 这样才有 result.tokens 且带 start_ts/end_ts；kokoro 0.7.x 的日文 __call__
+            # 分支既不产 tokens 也不调 join_timestamps。
+            _, ja_tokens = _get_ja_g2p()(spoken)
+            result_iter = pipeline.generate_from_tokens(ja_tokens, voice=voice)
+        else:
+            result_iter = pipeline(spoken, voice=voice)
+        for result in result_iter:
             audio = getattr(result, "audio", None)
             toks = getattr(result, "tokens", None)
             if audio is None and isinstance(result, (tuple, list)):
