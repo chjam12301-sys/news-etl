@@ -14,6 +14,7 @@ from app.db import Base, AudioAsset
 @pytest.mark.asyncio
 async def test_timeout_propagates_with_original_cause(monkeypatch):
     original = asyncio.TimeoutError('fixture timeout')
+    monkeypatch.setenv('TTS_ENGINE', 'edge-tts')  # 本用例针对 edge-tts 分支
     monkeypatch.setattr(tts.settings, 'tts_enabled', True)
     monkeypatch.setattr(tts, '_synth_edge', AsyncMock(side_effect=original))
     with pytest.raises(RuntimeError) as failure:

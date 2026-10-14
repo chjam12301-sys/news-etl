@@ -6,6 +6,7 @@ import re
 
 import pytest
 
+from app.audio_store import AUDIO_CONTENT_TYPES, sniff_audio
 from app.levels import ALL_LEVELS, EN_LEVELS, JA_LEVELS, LEVEL_BY_CODE
 from app.rewriter import offline_rewrite, parse_json_loose
 from app.tts import (
@@ -204,6 +205,27 @@ def test_offline_low_level_is_shorter():
 
 
 # --------------------------------------------------------------------------- #
+# 音频字节嗅探（TTS 编码降级时不能把 WAV 冒充成 MP3 上传）
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("data,expect", [
+    (b"ID3\x04\x00\x00", "mp3"),          # 带 ID3 的 MP3
+    (b"\xff\xfb\x90\x00", "mp3"),         # 无 ID3 的裸 MP3 帧同步
+    (b"\xff\xe0\x00\x00", "mp3"),
+    (b"RIFF\x24\x00\x00\x00WAVEfmt ", "wav"),
+    (b"\x00\x01\x02\x03\x04", ""),        # 无法识别 → 必须判失败，不能猜
+    (b"", ""),
+])
+def test_sniff_audio(data, expect):
+    assert sniff_audio(data) == expect
+
+
+def test_audio_content_types_cover_sniff_results():
+    for fmt in ("mp3", "wav", "m4a"):
+        ext, ctype = AUDIO_CONTENT_TYPES[fmt]
+        assert ext == fmt and ctype.startswith("audio/")
+
+
+# --------------------------------------------------------------------------- #
 # 合成入口（确定性离线流）
 # --------------------------------------------------------------------------- #
 @pytest.fixture
@@ -211,6 +233,8 @@ def edge_stream(monkeypatch):
     import edge_tts
     from app.tts import settings
     monkeypatch.setattr(settings, "tts_enabled", True)
+    # 本 fixture mock 的是 edge-tts，必须显式钉住引擎（默认值已是 kokoro）
+    monkeypatch.setenv("TTS_ENGINE", "edge-tts")
 
     class Communicate:
         def __init__(self, text, voice, **kwargs):
@@ -246,6 +270,7 @@ async def test_synthesize_produces_valid_timeline(edge_stream, text, lang):
 async def test_synthesize_rejects_failure(monkeypatch, case):
     from app import tts
     from unittest.mock import AsyncMock
+    monkeypatch.setenv("TTS_ENGINE", "edge-tts")  # 本用例针对 edge-tts 分支
     source_error = RuntimeError("upstream refused")
     edge = AsyncMock(side_effect=source_error if case == "upstream" else None,
                      return_value=tts.TTSResult(b"", 0))

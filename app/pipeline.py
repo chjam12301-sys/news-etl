@@ -16,7 +16,13 @@ from .db import Article, ArticleVersion, AudioAsset, JobRun, SessionLocal, init_
 from .fetcher import RawArticle, collect
 from .levels import ALL_LEVELS
 from .rewriter import get_llm, rewrite_all
-from .audio_store import get_audio_storage, public_audio_url, is_playable_audio
+from .audio_store import (
+    AUDIO_CONTENT_TYPES,
+    get_audio_storage,
+    is_playable_audio,
+    public_audio_url,
+    sniff_audio,
+)
 from .storage import audio_key, get_storage
 from .tts import synthesize
 
@@ -197,19 +203,15 @@ async def _process_article(
                 continue
             try:
                 res = await synthesize(version.body, version.lang)
-                _b = res.audio_bytes
-                # MP3 可能是 ID3 开头，也可能直接是帧同步（0xFF 0xE?，ffmpeg 默认如此）
-                _mp3_sig = _b[:3] == b"ID3" or (
-                    len(_b) >= 2 and _b[0] == 0xFF and (_b[1] & 0xE0) == 0xE0
-                )
-                is_mp3 = _mp3_sig or res.engine == "edge-tts"
-                ext = "mp3" if is_mp3 else "wav"
+                # 先按字节嗅探格式，再决定后缀与 Content-Type —— MP3 编码器不可用时
+                # _encode_mp3 会回退 WAV，若这里按 presumed mp3 写，就会产出解不出来的
+                # "MP3"。edge-tts 本身只产 MP3，嗅探失败时按已知格式兜底。
+                fmt = sniff_audio(res.audio_bytes) or ("mp3" if res.engine == "edge-tts" else "")
+                if not fmt:
+                    raise RuntimeError("音频字节无法识别格式，拒绝上传坏资产")
+                ext, ctype = AUDIO_CONTENT_TYPES[fmt]
                 key = audio_key(version.article_id, version.level_code, ext)
-                obj = storage.put(
-                    key,
-                    res.audio_bytes,
-                    content_type="audio/mpeg" if is_mp3 else "audio/wav",
-                )
+                obj = storage.put(key, res.audio_bytes, content_type=ctype)
                 if version.audio is not None:
                     db.delete(version.audio)
                     db.flush()
@@ -300,12 +302,12 @@ def _reserve_target(db: Session, day: dt.date, raws: list[RawArticle]) -> tuple[
     return article, created
 
 
-async def _safe_alt_voices(db: Session, article: Article) -> dict[str, Any]:
+async def _safe_alt_voices(db: Session, article: Article, *, with_tts: bool = True) -> dict[str, Any]:
     """可选音色预热：best-effort，绝不让它失败中断日报（用户明确要容错）。"""
     from .alt_voices import warm_alt_voices
 
     try:
-        return await warm_alt_voices(db, article)
+        return await warm_alt_voices(db, article, with_tts=with_tts)
     except Exception as exc:  # noqa: BLE001
         log.warning("[alt] 可选音色整体失败（不影响已发布内容）：%s", exc)
         try:
@@ -366,9 +368,6 @@ async def run_daily(
                 db.commit()
                 if totals["audio_errors"]:
                     raise RuntimeError("default audio incomplete; rerun resumes missing assets")
-                # 可选音色（4 音色 × 5 英语等级）：best-effort + 重试，失败不阻断发布。
-                # 放在 export 之前，这样详情 JSON 里就能带上 audio.alternates。
-                totals["alt_voices"] = await _safe_alt_voices(db, article)
                 from .exporter import export_all
                 export_result = export_all(db)
                 totals["export"] = "ok" if export_result.get("exported") else "skipped"
@@ -385,9 +384,20 @@ async def run_daily(
                         totals["git_pruned"] = storage.prune(settings.github_keep_days)["deleted"]
                     except Exception:
                         totals["prune"] = "failed"
+                    # 可选音色**放在发布之后**：音色是增强项，绝不能拖累当天内容发布
+                    # （20 份 × 3 次重试最坏可把 job 撑到超时被杀 → 当天不发布）。
+                    # 补完后再发一次：音频在对象存储不进 Git，只需重发 JSON 即可让
+                    # 详情带上 audio.alternates；无新增时不重复发布。
+                    alt = await _safe_alt_voices(db, article, with_tts=with_tts)
+                    totals["alt_voices"] = alt
+                    if alt.get("generated"):
+                        export_all(db)
+                        pub2 = publish_all(db=db, storage=storage, topics_days=3,
+                                           commit_msg=f"content: daily {day} article {article.id}: 可选音色")
+                        totals["alt_publish_ok"] = bool(pub2.get("ok"))
             if warmup_only:
                 # 仅补可选音色：不抓新闻、不改写、不发布（与 --warmup-only 语义一致）
-                totals["alt_voices"] = await _safe_alt_voices(db, article)
+                totals["alt_voices"] = await _safe_alt_voices(db, article, with_tts=with_tts)
             job.status = "success"
         except Exception as exc:
             db.rollback()

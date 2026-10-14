@@ -39,6 +39,36 @@ def is_playable_audio(audio: Any | None) -> bool:
     return audio is not None and audio.engine != "silent-fallback"
 
 
+def sniff_audio(data: bytes) -> str:
+    """按**字节**判断音频格式，返回 "mp3" / "wav" / "m4a" / ""（无法识别）。
+
+    存在的理由：TTS 的编码路径可能降级（MP3 编码器不可用时回退 WAV）。若调用方
+    按" presumed mp3" 写 key 与 Content-Type，就会把 WAV 字节以 audio/mpeg 上传，
+    产出一个解不出来的"MP3"——这正是 no-silent-tts 要禁止的静默坏资产。
+    所以**先嗅探、再决定后缀与 Content-Type**。
+    """
+    if not data:
+        return ""
+    if data[:3] == b"ID3":
+        return "mp3"
+    # 无 ID3 的裸 MP3 帧同步：11 位全 1（0xFF 0xE?）
+    if len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0:
+        return "mp3"
+    if data[:4] == b"RIFF":
+        return "wav"
+    if data[4:8] == b"ftyp":
+        return "m4a"
+    return ""
+
+
+#: 嗅探结果 → (对象后缀, Content-Type)
+AUDIO_CONTENT_TYPES = {
+    "mp3": ("mp3", "audio/mpeg"),
+    "wav": ("wav", "audio/wav"),
+    "m4a": ("m4a", "audio/mp4"),
+}
+
+
 class _LocalAudioStorage(LocalStorage):
     """本地兜底（仅开发用）。配了 public base 就拼绝对地址，否则给相对路径。"""
 

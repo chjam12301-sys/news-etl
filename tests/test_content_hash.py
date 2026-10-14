@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from app.content_hash import (
+    alternates_fingerprint,
     audio_fingerprint,
     compute_content_hash,
     timeline_fingerprint,
@@ -29,6 +30,46 @@ BASE = dict(
 
 def h(**over):
     return compute_content_hash(**{**BASE, **over})
+
+
+class _Alt:
+    """最小 AltVoiceAsset 替身（content_hash 只读这几个属性）。"""
+
+    def __init__(self, voice, duration_ms=1000, size_bytes=10, engine="kokoro", timeline=None):
+        self.voice = voice
+        self.duration_ms = duration_ms
+        self.size_bytes = size_bytes
+        self.engine = engine
+        self.timeline = timeline or []
+
+
+class TestAlternates:
+    """可选音色必须参与指纹。
+
+    契约（docs/API.md）：App「只按 content_hash 判断是否重新下载」。可选音色是
+    **异步补全**的，若不进指纹，一次 partial 的 run 与全成功的 run 指纹相同，
+    之后补齐的音色 App 永远拉不到。
+    """
+
+    def test_empty_alternates_do_not_change_hash(self):
+        # 空集合不并入 payload：不无谓地改动日语等级（无 alternates）的历史指纹
+        assert alternates_fingerprint([]) == ""
+        assert h(alternates=None) == h()
+        assert h(alternates=[]) == h()
+
+    def test_adding_alternate_changes_hash(self):
+        assert h(alternates=[_Alt("af_bella")]) != h()
+
+    def test_fingerprint_is_order_independent(self):
+        a = [_Alt("af_bella"), _Alt("bm_george")]
+        b = [_Alt("bm_george"), _Alt("af_bella")]
+        assert alternates_fingerprint(a) == alternates_fingerprint(b)
+        assert h(alternates=a) == h(alternates=b)
+
+    def test_changing_alternate_changes_hash(self):
+        base = h(alternates=[_Alt("af_bella")])
+        assert h(alternates=[_Alt("af_bella", duration_ms=999)]) != base
+        assert h(alternates=[_Alt("af_bella"), _Alt("bf_emma")]) != base
 
 
 class TestStability:

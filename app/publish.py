@@ -46,11 +46,18 @@ class VerifyResult:
     stale_rev: list[str] = field(default_factory=list)
     # 音频探测失败的具体原因（对象存储场景）
     audio_errors: list[str] = field(default_factory=list)
+    # 可选音色（audio.alternates）探测失败：**告警级**，不阻断发布。
+    # 音色是增强项，默认音频可达才是内容可用性的底线；这里只保证「不会静默全绿」。
+    alt_audio_errors: list[str] = field(default_factory=list)
     error: str = ""
 
     def summary(self) -> str:
         if self.ok:
-            return f"校验通过：{self.checked} 份详情 + 音频全部可访问"
+            base = f"校验通过：{self.checked} 份详情 + 音频全部可访问"
+            if self.alt_audio_errors:
+                # 可选音色不可达不阻断发布，但必须显式告警，不能"静默全绿"
+                return f"{base}；⚠️ 可选音色告警 {len(self.alt_audio_errors)}: {self.alt_audio_errors[:3]}"
+            return base
         parts = [f"校验失败（{self.error or '链接无效'}）"]
         if self.missing_detail:
             parts.append(f"详情缺失 {len(self.missing_detail)} 个: {self.missing_detail[:8]}")
@@ -285,6 +292,22 @@ def verify_published(
                     res.missing_audio.append(vid)
                     res.ok = False
                     res.audio_errors.append(f"v{vid} 音频不可访问({why}): {a_url}")
+
+        # 可选音色：同样探测可达性，但**只告警不阻断**（音色是增强项，
+        # 默认音频可达才是内容可用性的底线）。共用 audio_checks 缓存，几乎零成本。
+        for alt in ((it.get("audio") or {}).get("alternates") or []):
+            alt_url = (alt.get("url") or "").strip()
+            voice = alt.get("voice") or "?"
+            if not alt_url.startswith("http"):
+                res.alt_audio_errors.append(f"v{vid} 可选音色 {voice} URL 非 http: {alt_url}")
+                continue
+            if alt_url not in audio_checks:
+                audio_checks[alt_url] = head(alt_url)
+            alt_ok, alt_why = audio_checks[alt_url]
+            if not alt_ok:
+                res.alt_audio_errors.append(
+                    f"v{vid} 可选音色 {voice} 不可访问({alt_why}): {alt_url}"
+                )
 
         if check_hash:
             raw = _read_in_commit(repo_dir, d_rev or rev, d_rel)

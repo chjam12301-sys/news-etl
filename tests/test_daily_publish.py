@@ -35,14 +35,21 @@ def add_article(db, day=None, title="Government announces landmark Mars mission"
     return article
 
 
-def add_versions(db, article, codes=None):
+def add_versions(db, article, codes=None, with_audio=False):
     for lv in ALL_LEVELS:
         if codes is not None and lv.code not in codes:
             continue
-        db.add(ArticleVersion(article_id=article.id, level_code=lv.code, lang=lv.lang,
+        v = ArticleVersion(article_id=article.id, level_code=lv.code, lang=lv.lang,
             level=lv.level, level_label=lv.label, title="Title", body="Hello world.",
             paragraphs=["Hello world."], title_zh="标题", paragraphs_zh=["你好。"],
-            content_hash="a" * 16))
+            content_hash="a" * 16)
+        db.add(v)
+        db.flush()
+        if with_audio:
+            db.add(AudioAsset(version_id=v.id, lang=lv.lang, voice="af_heart",
+                              file_path=f"audio/{article.id}/{lv.code}.mp3",
+                              duration_ms=1000, size_bytes=1000,
+                              timeline=[{"i": 0}], engine="kokoro"))
     db.commit()
 
 
@@ -129,9 +136,12 @@ async def test_publication_result_controls_status_and_warmup(sessions, monkeypat
     result = await pipeline.run_daily(force=True)
     assert result["status"] == ("success" if publish_ok else "failed")
     assert result["stats"]["article_id"] == article_id
-    # 可选音色在 export 之前 best-effort 跑一次；抛错被吞掉，绝不连累发布
-    assert warmup.await_count == 1
-    assert result["stats"]["alt_voices"]["status"] == "failed"
+    # 可选音色排在**发布之后**：发布失败就不跑（不浪费），发布成功才跑且抛错被吞掉
+    assert warmup.await_count == int(publish_ok)
+    if publish_ok:
+        assert result["stats"]["alt_voices"]["status"] == "failed"
+    else:
+        assert "alt_voices" not in result["stats"]
     with sessions() as db:
         assert db.scalar(select(JobRun)).status == result["status"]
         assert len(db.scalars(select(Article)).all()) == 1
@@ -158,37 +168,97 @@ async def test_reset_rejected():
 
 
 @pytest.mark.asyncio
-async def test_alt_voices_generates_missing_and_skips_existing(sessions, monkeypatch):
-    """可选音色：缺失的生成、已存在的跳过；单份失败不影响其它。"""
+async def test_alt_voices_generates_skips_retries_and_refreshes_hash(sessions, monkeypatch):
+    """缺失的生成、已存在的跳过、单份失败重试 3 次、content_hash 重算，
+    以及 MP3 编码器不可用时按字节嗅探写成 .wav（不冒充 mp3）。"""
     from app import alt_voices as av
+    from app.db import AltVoiceAsset
 
-    monkeypatch.setattr(av, "alt_voices", lambda: ("v1", "v2"))
+    monkeypatch.setattr(av, "alt_voices", lambda: ("af_bella", "am_michael"))
     monkeypatch.setattr(av.settings, "tts_enabled", True)
+    monkeypatch.setattr(av, "_engine", lambda: "kokoro")
     calls = []
 
     async def fake_synth(text, lang, voice=None):
-        calls.append((lang, voice))
-        if voice == "v2":
+        calls.append(voice)
+        if voice == "am_michael":
             raise RuntimeError("boom")
-        return SimpleNamespace(audio_bytes=b"ID3xxxx", duration=1.5,
+        # 模拟 MP3 编码器不可用 → 回退 WAV（RIFF 头）
+        return SimpleNamespace(audio_bytes=b"RIFF\x00\x00\x00\x00WAVEfmt ", duration=1.5,
                                engine="kokoro", timeline_dict=lambda: [{"i": 0}])
 
     monkeypatch.setattr(av, "synthesize", fake_synth)
-    monkeypatch.setattr(av.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(av, "_sleep", AsyncMock())
     put = Mock()
-    storage = SimpleNamespace(put=put)
+    storage = SimpleNamespace(put=put, delete=Mock())
     with sessions() as db:
         article = add_article(db)
-        add_versions(db, article, codes={"en_a1"})
+        add_versions(db, article, codes={"en_a1"}, with_audio=True)
+        before = {v.level_code: v.content_hash for v in db.scalars(select(ArticleVersion))}
+
         stats = await av.warm_alt_voices(db, article, storage=storage)
         assert stats["generated"] == 1 and stats["failed"] == 1
-        # v2 重试 3 次后才放弃
-        assert sum(1 for _, v in calls if v == "v2") == 3
-        # 续跑：已存在的 v1 被跳过，不再合成
+        assert sum(1 for v in calls if v == "am_michael") == 3
+        call = put.call_args_list[0]
+        assert call.args[0].endswith("_af_bella.wav")
+        assert call.kwargs["content_type"] == "audio/wav"
+
         calls.clear()
         stats2 = await av.warm_alt_voices(db, article, storage=storage)
         assert stats2["skipped"] == 1 and stats2["failed"] == 1
-        assert all(v != "v1" for _, v in calls)
+        assert "af_bella" not in calls
+
+        # 可选音色变了 → content_hash 必须跟着变，否则 App 认为内容没更新、永远拉不到
+        v = db.scalar(select(ArticleVersion).where(ArticleVersion.level_code == "en_a1"))
+        assert v.content_hash != before["en_a1"]
+        assert db.scalar(select(AltVoiceAsset).where(AltVoiceAsset.voice == "af_bella"))
+
+
+@pytest.mark.asyncio
+async def test_alt_voices_skip_guards_and_prune_stale(sessions, monkeypatch):
+    """跳过条件（无默认音频 / with_tts=False / 非 kokoro 引擎）
+    与 ALT_VOICES 变更后的下架清理（DB 行 + 对象）。"""
+    from app import alt_voices as av
+    from app.db import AltVoiceAsset
+
+    monkeypatch.setattr(av.settings, "tts_enabled", True)
+    monkeypatch.setattr(av, "alt_voices", lambda: ("af_bella",))
+    delete = Mock()
+    storage = SimpleNamespace(put=Mock(), delete=delete)
+
+    async def fake_synth(text, lang, voice=None):
+        return SimpleNamespace(audio_bytes=b"ID3xxxx", duration=1.0,
+                               engine="kokoro", timeline_dict=lambda: [])
+
+    monkeypatch.setattr(av, "synthesize", fake_synth)
+    monkeypatch.setattr(av, "_sleep", AsyncMock())
+
+    monkeypatch.setattr(av, "_engine", lambda: "kokoro")
+    with sessions() as db:
+        article = add_article(db)
+        add_versions(db, article, codes={"en_a1"}, with_audio=False)
+        s = await av.warm_alt_voices(db, article, storage=storage)
+        assert s["generated"] == 0 and any(
+            i.get("reason") == "no_default_audio" for i in s["items"]
+        )
+        s = await av.warm_alt_voices(db, article, storage=storage, with_tts=False)
+        assert s["reason"] == "tts_disabled"
+        monkeypatch.setattr(av, "_engine", lambda: "edge-tts")
+        s = await av.warm_alt_voices(db, article, storage=storage)
+        assert s["reason"] == "engine_mismatch"
+
+    monkeypatch.setattr(av, "_engine", lambda: "kokoro")
+    with sessions() as db:
+        article = add_article(db, title="Prune stale voices story")
+        add_versions(db, article, codes={"en_a1"}, with_audio=True)
+        await av.warm_alt_voices(db, article, storage=storage)
+        assert db.scalar(select(AltVoiceAsset).where(AltVoiceAsset.voice == "af_bella"))
+        # 清单改名 → 旧音色下架：DB 行与对象都清掉
+        monkeypatch.setattr(av, "alt_voices", lambda: ("bf_emma",))
+        s = await av.warm_alt_voices(db, article, storage=storage)
+        assert s["removed"] == 1 and s["generated"] == 1
+        assert db.scalar(select(AltVoiceAsset).where(AltVoiceAsset.voice == "af_bella")) is None
+        assert delete.called
 
 
 def test_date_repair_exact_match_and_dry(sessions):

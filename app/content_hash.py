@@ -94,6 +94,29 @@ def audio_fingerprint(
     )
 
 
+def alternates_fingerprint(alternates: list[Any] | None) -> str:
+    """可选音色集合的指纹（按 voice 排序，保证与生成顺序无关）。
+
+    必须进 content_hash：可选音色是**异步补全**的——一次 partial 的 run 与全成功的 run
+    若指纹相同，App 会判定「内容没更新」而沿用旧详情，之后补齐的音色就永远拉不到。
+    """
+    items = [a for a in (alternates or []) if getattr(a, "voice", None)]
+    if not items:
+        return ""
+    return _digest(
+        [
+            [
+                a.voice,
+                a.duration_ms or 0,
+                a.size_bytes or 0,
+                a.engine or "",
+                timeline_fingerprint(a.timeline),
+            ]
+            for a in sorted(items, key=lambda x: x.voice)
+        ]
+    )
+
+
 def compute_content_hash(
     *,
     level_code: str,
@@ -108,6 +131,7 @@ def compute_content_hash(
     paragraphs_zh: list[Any] | None = None,
     vocab: list[Any] | None = None,
     audio: dict[str, Any] | str | None = None,
+    alternates: list[Any] | None = None,
 ) -> str:
     """计算单篇内容指纹。
 
@@ -130,13 +154,21 @@ def compute_content_hash(
             else (audio_fingerprint(**audio) if audio else "")
         ),
     }
+    # 可选音色：**仅在存在时**并入 payload。
+    # 若无条件加入 key，所有历史版本的指纹都会变一次（无谓的全量重下）；
+    # 只在有可选音色时加入，既让「补齐音色」能改变指纹，又不波及日语等级。
+    alt_fp = alternates_fingerprint(alternates)
+    if alt_fp:
+        payload["alt"] = alt_fp
     return _digest(payload)
 
 
-def from_version(v, audio=None) -> str:
-    """从 ArticleVersion (+ AudioAsset) 计算。音频为空时也可算。"""
+def from_version(v, audio=None, alternates=None) -> str:
+    """从 ArticleVersion (+ AudioAsset + AltVoiceAsset) 计算。音频为空时也可算。"""
     from .audio_store import is_playable_audio
 
+    if alternates is None:
+        alternates = list(getattr(v, "alt_audios", None) or [])
     au = None
     if is_playable_audio(audio):
         au = audio_fingerprint(
@@ -159,6 +191,7 @@ def from_version(v, audio=None) -> str:
         paragraphs_zh=v.paragraphs_zh or [],
         vocab=v.vocab or [],
         audio=au,
+        alternates=alternates,
     )
 
 

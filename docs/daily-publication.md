@@ -4,9 +4,13 @@
 
 同日重跑复用按 `fetched_at,id` 排序的第一篇；失败留下的文章继续补缺失等级和默认音频。数据库事务锁防止 API、CLI 与 Actions 并发创建第二篇。`--force` 只处理当日目标缺少译文的等级；daily 不支持清空历史。
 
-可选音色（默认音色之外的 4 个 Kokoro 音色：`af_bella` / `am_michael` / `bf_emma` / `bm_george`）由**本流水线用 Kokoro 自托管生成**：为当日目标的五个英语等级各生成一份，共 20 份，音频落 R2（`audio/<id>/<level>_<voice>.mp3`），元数据写入 `alt_voice_assets` 表，随详情 JSON 的 `audio.alternates` 一起发布。日语与默认音色不受影响。
+可选音色（默认音色之外的 4 个 Kokoro 音色：`af_bella` / `am_michael` / `bf_emma` / `bm_george`）由**本流水线用 Kokoro 自托管生成**：为当日目标的五个英语等级各生成一份，共 20 份，音频落 R2（`audio/<id>/<level>_<voice>.<mp3|wav>`），元数据写入 `alt_voice_assets` 表，随详情 JSON 的 `audio.alternates` 一起发布。日语与默认音色不受影响。
 
-生成**在 export 之前**执行，best-effort：每份独立**重试 3 次**（指数退避）、已存在的**跳过**（可续跑）、单份失败只记录，**绝不回滚已发布内容**。音色清单由 env `ALT_VOICES` 覆盖（逗号分隔）。
+生成**排在四阶段发布之后**：音色是增强项，绝不能拖累当天内容发布（20 份 × 3 次重试最坏会把 job 撑到超时被杀）。补完后再发一次——音频在对象存储不进 Git，只需重发 JSON；**没有新增时不重复发布**。因此新文章的首发详情里暂时没有 `alternates`，补发后才有。
+
+单份**重试 3 次**（指数退避）、已存在的**跳过**（可续跑）、逐份提交；**上传前按字节嗅探**（`sniff_audio`），识别不出就判失败——绝不把 WAV 字节以 `.mp3`/`audio/mpeg` 上传。音色变了会**重算该版本的 `content_hash`**，App 才能感知到新增/下架。可选音色的可达性在发布校验里**只告警不阻断**（`summary` 会带 `⚠️ 可选音色告警`）。
+
+音色清单由 env `ALT_VOICES` 覆盖（逗号分隔，读 `.env`）。**改动清单后重跑会下架多出来的音色**：删除对应 DB 行与 R2 对象，不会继续对外宣称。清单里的音色名会做格式校验，非法则整体跳过（非 kokoro 引擎、缺默认音频、`--no-tts` 也都会跳过）。
 
 > 历史：该链路原走外部 Cloudflare Worker（`day-voice-api.innertalkdiary.workers.dev`，微软 edge-tts 音色 Ava/Emma/Sonia/Guy）。该 Worker 现返回 `503 generation_unavailable`（微软端点对数据中心 IP 封 403），已废弃，改为 Kokoro 自托管。
 

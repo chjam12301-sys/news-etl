@@ -37,9 +37,10 @@ class Settings(BaseSettings):
     openrouter_model: str = "deepseek/deepseek-chat-v3-0324:free"
 
     # ---- TTS -----------------------------------------------------------
-    # Kokoro OSS（CI 内自托管，免费不绑卡）。可选音色清单由 env ALT_VOICES 覆盖
-    # （见 app/alt_voices.py::DEFAULT_VOICES）。不再依赖任何外部音色 Worker。
+    # Kokoro OSS（CI 内自托管，免费不绑卡）。可选音色清单（逗号分隔），
+    # 见 app/alt_voices.py。不再依赖任何外部音色 Worker。
     tts_enabled: bool = True
+    alt_voices: str = "af_bella,am_michael,bf_emma,bm_george"
     tts_voice_en: str = "en-US-AriaNeural"
     tts_voice_ja: str = "ja-JP-NanamiNeural"
 

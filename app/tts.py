@@ -573,7 +573,7 @@ async def synthesize(text: str, lang: str, voice: str | None = None) -> TTSResul
         raise ValueError("TTS text is empty")
     if not settings.tts_enabled:
         raise RuntimeError("TTS is disabled")
-    engine = os.environ.get("TTS_ENGINE", "edge-tts").lower()
+    engine = os.environ.get("TTS_ENGINE", "kokoro").strip().lower()
     try:
         if engine == "kokoro":
             res = await asyncio.wait_for(_synth_kokoro(text, lang, voice), timeout=300)

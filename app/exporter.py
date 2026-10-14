@@ -202,7 +202,7 @@ def _version_detail(v: ArticleVersion, a: Article, base: str, rev: str = "") -> 
     # 可选音色：详情里把各音色的词级时间轴塞进对应 alternate（自包含，App 一次拿全）
     audio = d.get("audio")
     if audio and audio.get("alternates"):
-        by_voice = {a.voice: (a.timeline or []) for a in (v.alt_audios or [])}
+        by_voice = {x.voice: (x.timeline or []) for x in (v.alt_audios or [])}
         for alt in audio["alternates"]:
             alt["timeline"] = by_voice.get(alt["voice"], [])
     return d
@@ -245,7 +245,7 @@ def export_day(db: Session, date: dt.date, *, rev: str = "", export_details: boo
     rows = db.execute(
         select(ArticleVersion, Article)
         .join(Article, Article.id == ArticleVersion.article_id)
-        .options(selectinload(ArticleVersion.audio))
+        .options(selectinload(ArticleVersion.audio), selectinload(ArticleVersion.alt_audios))
         .where(Article.published_date == date)
         .order_by(Article.id, ArticleVersion.lang, ArticleVersion.level)
     ).all()
