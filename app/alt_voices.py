@@ -258,6 +258,12 @@ def _ensure_timeline(storage, version: ArticleVersion, row: AltVoiceAsset, stats
             content_type="application/json; charset=utf-8",
         )
         stats["timeline_uploaded"] += 1
+        # 补传成功就把 URL 写回行里（提交由外层按等级统一做）。不写的话，
+        # 走自愈路径的**存量行** timeline_url 恒为 NULL，导出只能现拼 —— 换了桶时
+        # 现拼的 URL 指向新桶，而库存 public_url 仍指向旧桶，两者分家。
+        row.timeline_url = (
+            public_timeline_url(version.article_id, version.level_code, row.voice) or ""
+        )
     except Exception as exc:  # noqa: BLE001
         log.warning("[alt] 补传时间轴失败 %s：%s", key, exc)
 

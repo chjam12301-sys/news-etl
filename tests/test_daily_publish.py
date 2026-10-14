@@ -149,17 +149,31 @@ async def test_publication_result_controls_status_and_warmup(sessions, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_warmup_only_does_not_process_or_publish(sessions, monkeypatch):
+async def test_warmup_only_skips_pipeline_but_republishes_changes(sessions, monkeypatch):
+    """--warmup-only：不抓新闻、不改写、不重跑默认音频；但**有变化就要重发 JSON**。
+
+    下架音色（removed>0）尤其必须重发：DB 行与对象都删了，已发布详情却仍列着
+    这个 voice 与其 URL —— 用户侧就是死链，而这条路径原本没有任何出口去修正。
+    """
     with sessions() as db:
         add_article(db)
     monkeypatch.setattr(pipeline, "SessionLocal", sessions)
     monkeypatch.setattr(pipeline, "init_db", lambda: None)
-    monkeypatch.setattr(pipeline, "_process_article", AsyncMock(side_effect=AssertionError()))
-    monkeypatch.setattr(pipeline, "get_storage", Mock(side_effect=AssertionError()))
-    monkeypatch.setattr(alt_voices, "warm_alt_voices", AsyncMock(return_value={"generated": 20}))
+    process = AsyncMock(side_effect=AssertionError("must not process"))
+    monkeypatch.setattr(pipeline, "_process_article", process)
+    monkeypatch.setattr(pipeline, "get_storage",
+                        lambda: SimpleNamespace(provider="github", prune=lambda n: {"deleted": 0}))
+    from app import exporter, publish
+    monkeypatch.setattr(exporter, "export_all", lambda db, days=3: {"exported": True})
+    pub = Mock(return_value={"ok": True, "verify": "校验通过", "index_rev": "r"})
+    monkeypatch.setattr(publish, "publish_all", pub)
+    monkeypatch.setattr(alt_voices, "warm_alt_voices",
+                        AsyncMock(return_value={"generated": 0, "removed": 2, "status": "ok"}))
     result = await pipeline.run_daily(warmup_only=True)
     assert result["status"] == "success"
-    assert result["stats"]["alt_voices"]["generated"] == 20
+    process.assert_not_called()
+    assert result["stats"]["alt_publish_ok"] is True
+    pub.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -208,6 +222,101 @@ async def test_warmup_days_backfills_recent_articles_only(sessions, monkeypatch)
     assert result["stats"]["publish_ok"] is True
     export.assert_called_once()
     assert "回填" in pub.call_args.kwargs["commit_msg"]
+
+
+@pytest.mark.asyncio
+async def test_backfill_window_drives_export_and_publish_days(sessions, monkeypatch):
+    """回填窗口必须驱动导出与发布的**天数**：写死 3 的话第 4 天及更早只传对象、
+    不重发 JSON，用户侧零变化而 job 照样报成功。"""
+    day = dt.date(2026, 10, 14)
+    with sessions() as db:
+        add_article(db, day, title="Window story")
+    monkeypatch.setattr(pipeline, "SessionLocal", sessions)
+    monkeypatch.setattr(pipeline, "init_db", lambda: None)
+    monkeypatch.setattr(pipeline, "collect", Mock(side_effect=AssertionError("must not fetch")))
+    from app import exporter, publish
+
+    export_days: list[int] = []
+
+    def fake_export(db, days=3):
+        export_days.append(days)
+        return {"exported": True}
+
+    monkeypatch.setattr(exporter, "export_all", fake_export)
+    pub = Mock(return_value={"ok": True, "verify": "校验通过", "index_rev": "r"})
+    monkeypatch.setattr(publish, "publish_all", pub)
+    monkeypatch.setattr(pipeline, "get_storage",
+                        lambda: SimpleNamespace(provider="github", prune=lambda n: {"deleted": 0}))
+
+    async def fake_warm(db, article, *, with_tts=True):
+        return {"generated": 1, "timeline_uploaded": 0, "removed": 0, "status": "ok"}
+
+    monkeypatch.setattr(alt_voices, "warm_alt_voices", fake_warm)
+
+    result = await pipeline.run_daily(warmup_days=5, day_override=day)
+    assert result["status"] == "success"
+    assert export_days == [5]
+    assert pub.call_args.kwargs["topics_days"] == 5
+
+
+@pytest.mark.asyncio
+async def test_backfill_covers_every_article_of_the_day(sessions, monkeypatch):
+    """同一天有多篇文章时都要回填 —— 导出与发布是按 published_date 全量覆盖的，
+    只暖 daily_target 那 1 篇会让同日其它文章继续留着 404。"""
+    day = dt.date(2026, 10, 14)
+    with sessions() as db:
+        a1 = add_article(db, day, title="First story of the day")
+        a2 = add_article(db, day, title="Second story of the day")
+        wanted = sorted([a1.id, a2.id])
+    monkeypatch.setattr(pipeline, "SessionLocal", sessions)
+    monkeypatch.setattr(pipeline, "init_db", lambda: None)
+    monkeypatch.setattr(pipeline, "collect", Mock(side_effect=AssertionError("must not fetch")))
+
+    seen: list[int] = []
+
+    async def fake_warm(db, article, *, with_tts=True):
+        seen.append(article.id)
+        return {"generated": 0, "timeline_uploaded": 0, "removed": 0, "status": "ok"}
+
+    monkeypatch.setattr(alt_voices, "warm_alt_voices", fake_warm)
+    result = await pipeline.run_daily(warmup_days=1, day_override=day)
+    assert result["status"] == "success"
+    assert sorted(seen) == wanted
+    assert result["stats"]["backfill"]["articles"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["raise", "engine_mismatch", "no_voices"])
+async def test_backfill_zero_output_is_not_silent_success(sessions, monkeypatch, mode):
+    """回填「一篇都没跑成」不能是绿色 success：TTS 全挂 / 引擎不匹配 / 没配音色
+    都会让每天返回空统计，若不看 status 就会留下一条 success 却零产出的 JobRun。"""
+    day = dt.date(2026, 10, 14)
+    with sessions() as db:
+        add_article(db, day, title="Zero output story")
+    monkeypatch.setattr(pipeline, "SessionLocal", sessions)
+    monkeypatch.setattr(pipeline, "init_db", lambda: None)
+    monkeypatch.setattr(pipeline, "collect", Mock(side_effect=AssertionError("must not fetch")))
+
+    if mode == "raise":
+
+        async def fake_warm(db, article, *, with_tts=True):
+            raise RuntimeError("tts down")
+
+    else:
+
+        async def fake_warm(db, article, *, with_tts=True):  # noqa: F811
+            return {"status": "skipped", "reason": mode, "generated": 0,
+                    "timeline_uploaded": 0, "removed": 0}
+
+    monkeypatch.setattr(alt_voices, "warm_alt_voices", fake_warm)
+    result = await pipeline.run_daily(warmup_days=1, day_override=day)
+    assert result["status"] == "failed"
+    assert "backfill produced nothing" in (result["error"] or "")
+    bf = result["stats"]["backfill"]
+    assert bf["articles_failed"] == bf["articles"] == 1
+    assert bf["reasons"]
+    with sessions() as db:
+        assert db.scalar(select(JobRun)).status == "failed"
 
 
 @pytest.mark.asyncio
@@ -385,6 +494,9 @@ async def test_alt_voices_self_heals_missing_timeline_object(sessions, monkeypat
     monkeypatch.setattr(av, "alt_voices", lambda: ("af_bella",))
     synth = AsyncMock(side_effect=AssertionError("must not re-synthesize"))
     monkeypatch.setattr(av, "synthesize", synth)
+    # 自愈路径也要把 timeline_url 写回行里，否则存量行的该列恒为 NULL
+    monkeypatch.setattr(av, "public_timeline_url",
+                        lambda aid, code, voice: f"https://cdn.test/timeline/{aid}/{code}_{voice}.json")
     put = Mock()
     # 音频对象在、时间轴对象不在 —— 只有后者需要补（probe 给三态，
     # 这里模拟真实历史数据：音频是当年传的，时间轴对象从没传过）
@@ -408,6 +520,8 @@ async def test_alt_voices_self_heals_missing_timeline_object(sessions, monkeypat
         synth.assert_not_awaited()
         put.assert_called_once()
         assert put.call_args.args[0] == f"timeline/{article.id}/en_a1_af_bella.json"
+        row = db.scalar(select(AltVoiceAsset))
+        assert row.timeline_url == f"https://cdn.test/timeline/{article.id}/en_a1_af_bella.json"
 
 
 def test_exporter_exposes_timeline_url_and_never_inlines_it(monkeypatch, sessions):

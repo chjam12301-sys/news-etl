@@ -17,8 +17,9 @@
 ## 安全重跑
 
 - 常规日更：`python -m app.cli daily`。
-- 只为今日现有目标补音色：`python -m app.cli daily --warmup-only`，不会抓新闻、改写、生成默认音频或重新发布。它通过 Worker manifest 核验已发布版本身份。
-- Actions `daily.yml` 的 `warmup_only=true` 对应仅预热；默认 false。
+- 只为今日现有目标补音色：`python -m app.cli daily --warmup-only`，不会抓新闻、改写或生成默认音频。**但音色有变化（新增 / 补时间轴 / 下架）时会重发一次 JSON** —— 下架尤其必须重发：DB 行与对象都删了，已发布详情却仍列着这个 voice，不重发就变成用户侧的死链。
+- 补历史缺口：`python -m app.cli daily --warmup-days N`（可配 `--date` 指定截止日）。回填最近 N 天**每天的全部文章**的可选音色：音频对象缺失就重新合成，时间轴对象缺失就补传。不抓新闻、不改写、不动默认音频；有增量才重发一次 JSON，重发窗口用 `max(3, N)` 天（写死 3 会让第 4 天及更早只传对象、不重发 JSON）。**一篇都没跑成会直接判失败**，不会留下一条"成功却零产出"的 JobRun。
+- Actions `daily.yml` 的 `warmup_only=true` / `warmup_days=N` 对应上面两种；默认留空。
 - 没有当天文章时仅预热返回失败，不退回昨天、不触发抓新稿。
 
 ## 2026-10-12 日期修复

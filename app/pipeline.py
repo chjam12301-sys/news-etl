@@ -303,7 +303,12 @@ def _reserve_target(db: Session, day: dt.date, raws: list[RawArticle]) -> tuple[
 
 
 async def _safe_alt_voices(db: Session, article: Article, *, with_tts: bool = True) -> dict[str, Any]:
-    """可选音色预热：best-effort，绝不让它失败中断日报（用户明确要容错）。"""
+    """可选音色预热：best-effort，绝不让它失败中断日报（用户明确要容错）。
+
+    失败时也要把计数键补齐成 0：调用方（回填）靠这些键聚合，缺键会被
+    `.get(k, 0)` 一律补零，于是「整篇文章全炸」与「一切正常」在统计上完全
+    无法区分 —— 回填就会跑出一个全绿却零产出的 job。
+    """
     from .alt_voices import warm_alt_voices
 
     try:
@@ -314,7 +319,12 @@ async def _safe_alt_voices(db: Session, article: Article, *, with_tts: bool = Tr
             db.rollback()
         except Exception:  # noqa: BLE001
             pass
-        return {"status": "failed", "error": type(exc).__name__}
+        return {
+            "status": "failed",
+            "error": type(exc).__name__,
+            "generated": 0, "skipped": 0, "failed": 1,
+            "removed": 0, "timeline_uploaded": 0,
+        }
 
 
 async def warmup_recent(
@@ -330,29 +340,69 @@ async def warmup_recent(
     stats: dict[str, Any] = {
         "days": span, "from": end_day.isoformat(), "articles": 0,
         "generated": 0, "skipped": 0, "failed": 0, "removed": 0,
-        "timeline_uploaded": 0, "items": [],
+        "timeline_uploaded": 0, "articles_failed": 0, "reasons": {}, "items": [],
     }
     for i in range(span):
         d = end_day - dt.timedelta(days=i)
-        article = daily_target(db, d)
-        if article is None:
+        # 取当天**全部**文章（不是 daily_target 的那 1 篇）：导出与发布都是按
+        # published_date 全量覆盖的，回填只暖 1 篇就会让同日其它文章继续留着 404。
+        articles = list(
+            db.scalars(
+                select(Article).where(Article.published_date == d)
+                .order_by(Article.fetched_at, Article.id)
+            )
+        )
+        if not articles:
             stats["items"].append({"day": d.isoformat(), "status": "no_article"})
             continue
-        r = await _safe_alt_voices(db, article, with_tts=with_tts)
-        stats["articles"] += 1
-        for k in ("generated", "skipped", "failed", "removed", "timeline_uploaded"):
-            stats[k] += int(r.get(k, 0) or 0)
-        stats["items"].append({
-            "day": d.isoformat(), "article_id": article.id,
-            "status": r.get("status", "?"),
-            "generated": int(r.get("generated", 0) or 0),
-            "timeline_uploaded": int(r.get("timeline_uploaded", 0) or 0),
-            "failed": int(r.get("failed", 0) or 0),
-        })
+        for article in articles:
+            r = await _safe_alt_voices(db, article, with_tts=with_tts)
+            status = r.get("status", "?")
+            stats["articles"] += 1
+            if status != "ok":
+                stats["articles_failed"] += 1
+                reason = r.get("reason") or r.get("error") or status
+                stats["reasons"][str(reason)] = stats["reasons"].get(str(reason), 0) + 1
+            for k in ("generated", "skipped", "failed", "removed", "timeline_uploaded"):
+                stats[k] += int(r.get(k, 0) or 0)
+            stats["items"].append({
+                "day": d.isoformat(), "article_id": article.id, "status": status,
+                "generated": int(r.get("generated", 0) or 0),
+                "timeline_uploaded": int(r.get("timeline_uploaded", 0) or 0),
+                "failed": int(r.get("failed", 0) or 0),
+            })
     log.info("[alt] 回填最近 %d 天（至 %s）：文章 %d / 新生成 %d / 补时间轴 %d / 失败 %d",
              span, end_day, stats["articles"], stats["generated"],
              stats["timeline_uploaded"], stats["failed"])
+    if stats["articles_failed"]:
+        log.error("[alt] 回填有 %d/%d 篇文章未成功：%s",
+                  stats["articles_failed"], stats["articles"], stats["reasons"])
     return stats
+
+
+def _republish_for_alt(db: Session, label: str, days: int = 3) -> dict[str, Any]:
+    """可选音色发生变化后重发一次 JSON；失败即抛（调用方决定致不致命）。
+
+    音频在对象存储、不进 Git，所以只需重发 JSON 就能让 App 拿到新的
+    `audio.alternates`。
+
+    `days` 必须覆盖本次改动触及的**全部**发行日：写死 3 的话，回填窗口更靠前
+    的那些天只会被传对象、不会被重导出重发布 —— 用户侧零变化，而 job 照样报成功。
+    """
+    from .exporter import export_all
+    from .publish import publish_all
+
+    span = max(1, int(days))
+    res = export_all(db, days=span)
+    if settings.export_json and not res.get("exported"):
+        raise RuntimeError(f"{label}: 导出失败（{res.get('error') or '未知'}），拒绝发布陈旧内容")
+    storage = get_storage()
+    if getattr(storage, "provider", "") != "github":
+        return {"ok": True, "verify": "非 github 存储，跳过发布"}
+    pub = publish_all(db=db, storage=storage, topics_days=span, commit_msg=f"content: {label}")
+    if not pub.get("ok"):
+        raise RuntimeError(f"{label}: 发布失败 {pub.get('verify') or pub.get('reason') or ''}")
+    return pub
 
 
 async def run_daily(
@@ -387,19 +437,19 @@ async def run_daily(
                 # 不抓新闻、不改写、不动默认音频。有增量才重发一次 JSON。
                 bf = await warmup_recent(db, warmup_days, day, with_tts=with_tts)
                 totals["backfill"] = bf
+                # 「全绿零产出」必须被看见：一篇都没跑成（或压根没文章）就报错，
+                # 否则回填会留下一条 success 却什么都没修的 JobRun。
+                if bf["articles"] == 0 or bf["articles_failed"] == bf["articles"]:
+                    raise RuntimeError(
+                        f"backfill produced nothing: articles={bf['articles']}, "
+                        f"failed={bf['articles_failed']}, reasons={bf['reasons']}"
+                    )
                 if bf.get("generated") or bf.get("timeline_uploaded") or bf.get("removed"):
-                    from .exporter import export_all
-                    export_all(db)
-                    storage = get_storage()
-                    if getattr(storage, "provider", "") == "github":
-                        from .publish import publish_all
-                        pub = publish_all(db=db, storage=storage, topics_days=3,
-                                          commit_msg=f"content: 回填最近 {warmup_days} 天可选音色")
-                        totals.update(publish_ok=bool(pub.get("ok")),
-                                      publish_verify=pub.get("verify"),
-                                      index_rev=pub.get("index_rev", ""))
-                        if not pub.get("ok"):
-                            raise RuntimeError("backfill publication failed")
+                    pub = _republish_for_alt(db, f"回填最近 {warmup_days} 天可选音色",
+                                             days=max(3, warmup_days))
+                    totals.update(publish_ok=bool(pub.get("ok")),
+                                  publish_verify=pub.get("verify"),
+                                  index_rev=pub.get("index_rev", ""))
                 job.status = "success"
             else:
                 article = daily_target(db, day)
@@ -450,21 +500,29 @@ async def run_daily(
                         alt = await _safe_alt_voices(db, article, with_tts=with_tts)
                         totals["alt_voices"] = alt
                         if alt.get("generated") or alt.get("timeline_uploaded") or alt.get("removed"):
-                            export_all(db)
-                            pub2 = publish_all(db=db, storage=storage, topics_days=3,
-                                               commit_msg=f"content: daily {day} article {article.id}: 可选音色")
-                            totals["alt_publish_ok"] = bool(pub2.get("ok"))
-                            totals["alt_publish_verify"] = pub2.get("verify")
-                            if not pub2.get("ok"):
-                                # 不阻断：内容已发布成功，音色只是增强项。但必须显式报错，
-                                # 否则「详情里没有 alternates」会一直静默到下次常规发布
-                                # （publish_all 会重发最近 3 天，届时自愈）。
-                                totals["alt_publish_error"] = pub2.get("verify") or "unknown"
-                                log.error("[alt] 可选音色补发失败（内容已发布，音色待下次重发自愈）：%s",
-                                          totals["alt_publish_error"])
+                            # 不阻断：内容已发布成功，音色只是增强项。但必须显式报错，
+                            # 否则「详情里没有 alternates」会一直静默到下次常规发布。
+                            try:
+                                pub2 = _republish_for_alt(
+                                    db, f"daily {day} article {article.id}: 可选音色", days=3)
+                                totals["alt_publish_ok"] = True
+                                totals["alt_publish_verify"] = pub2.get("verify")
+                            except Exception as exc:  # noqa: BLE001
+                                totals["alt_publish_ok"] = False
+                                totals["alt_publish_error"] = str(exc)[:200]
+                                log.error(
+                                    "[alt] 可选音色补发失败（内容已发布，音色待下次重发自愈）：%s", exc)
                 if warmup_only:
-                    # 仅补可选音色：不抓新闻、不改写、不发布（与 --warmup-only 语义一致）
-                    totals["alt_voices"] = await _safe_alt_voices(db, article, with_tts=with_tts)
+                    # 仅补可选音色：不抓新闻、不改写。**但下架音色（removed>0）必须重发**
+                    # —— DB 行与对象都删了，已发布详情却仍列着这个 voice 与其 URL，
+                    # 用户侧就是死链，而这条路径原本没有任何出口去修正它。
+                    alt = await _safe_alt_voices(db, article, with_tts=with_tts)
+                    totals["alt_voices"] = alt
+                    if alt.get("generated") or alt.get("timeline_uploaded") or alt.get("removed"):
+                        pub = _republish_for_alt(db, f"daily {day} article {article.id}: 可选音色",
+                                                 days=3)
+                        totals["alt_publish_ok"] = True
+                        totals["alt_publish_verify"] = pub.get("verify")
                 job.status = "success"
         except Exception as exc:
             db.rollback()

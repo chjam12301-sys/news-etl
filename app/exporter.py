@@ -370,15 +370,21 @@ def _all_levels():
     return [(lv.code, lv.label, lv.lang, lv.level) for lv in sorted(ALL_LEVELS, key=lambda x: (x.lang, x.level))]
 
 
-def export_all(db: Session) -> dict[str, Any]:
-    """跑完流水线后统一导出。"""
+def export_all(db: Session, days: int = 3) -> dict[str, Any]:
+    """跑完流水线后统一导出。
+
+    `days` 决定覆盖多少个发行日 —— 回填场景（--warmup-days N）的窗口可能
+    大于常规的 3 天，若这里写死 3，第 4 天及更早的改动就永远不会落进 Git，
+    等于对象传了、详情没变。
+    """
     if not settings.export_json:
         log.info("[export] export_json=false，跳过")
         return {"exported": False}
 
     try:
+        span = max(1, int(days))
         dates = db.execute(
-            select(Article.published_date).distinct().order_by(Article.published_date.desc()).limit(3)
+            select(Article.published_date).distinct().order_by(Article.published_date.desc()).limit(span)
         ).scalars().all()
         day_keys = [export_day(db, d) for d in dates if d]
         idx = export_index(db)
