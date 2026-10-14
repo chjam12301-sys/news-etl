@@ -517,9 +517,15 @@ async def synthesize(text: str, lang: str, voice: str | None = None) -> TTSResul
         else:
             res = await asyncio.wait_for(_synth_edge(text, voice or _pick_voice(lang)), timeout=180)
     except Exception as exc:
+        # 把内部异常的真实信息与 traceback 一起抛出，CI 日志可见根因
+        # （曾因只记类名，漏掉 transformers 5.x 的
+        #  "Boolean value of Tensor with more than one value is ambiguous"）。
+        log.exception("TTS synthesis crashed")
         status = getattr(exc, "status", None) or getattr(exc, "code", None)
         suffix = f" [HTTP {status}]" if status else ""
-        raise RuntimeError(f"TTS synthesis failed ({type(exc).__name__}){suffix}") from exc
+        raise RuntimeError(
+            f"TTS synthesis failed ({type(exc).__name__}): {exc}{suffix}"
+        ) from exc
     if not res.audio_bytes:
         raise RuntimeError("TTS returned empty audio")
     return res

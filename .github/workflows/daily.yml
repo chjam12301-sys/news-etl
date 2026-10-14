@@ -113,6 +113,7 @@ jobs:
           except Exception as e:
               print(f"  Kokoro import 失败: {e!r}")
               raise SystemExit(1)
+          failures = []
           for lang_code, voice, text in [
               ("a", os.environ.get("TTS_VOICE_EN", "af_heart"), "Hello! This is Kokoro speaking."),
               ("j", os.environ.get("TTS_VOICE_JA", "jf_alpha"), "こんにちは。これはテストです。"),
@@ -129,10 +130,16 @@ jobs:
                               shown += 1
                           break
                   alen = sum(len(getattr(r, 'audio', []) or []) for r in results)
-                  print(f"  [{lang_code}] chunks={len(results)} audio_samples={alen} -> Kokoro OK")
+                  ok = alen > 0
+                  print(f"  [{lang_code}] chunks={len(results)} audio_samples={alen} -> {'Kokoro OK' if ok else 'NO AUDIO'}")
+                  if not ok:
+                      failures.append(lang_code)
               except Exception as e:
                   print(f"  [{lang_code}] Kokoro 合成失败: {e!r}")
-                  raise SystemExit(1)
+                  failures.append(lang_code)
+          if failures:
+              print(f"  ⚠️ Kokoro 探针失败语言: {failures}（详见生成步骤日志；不阻断正式流程）")
+              raise SystemExit(1)
           KOK
           set -e
 

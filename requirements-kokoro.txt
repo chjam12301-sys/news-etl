@@ -1,6 +1,15 @@
 # Kokoro OSS TTS（CI 内自托管，免费不绑卡，替代被微软 403 封锁的 edge-tts）
-# 仅当 TTS_ENGINE=kokoro 时需要。torch 由 kokoro 依赖自动拉取（CPU only）。
-kokoro>=0.7,<0.8
-misaki[en,ja]>=0.7
-soundfile>=0.12
-numpy>=1.24
+# 仅当 TTS_ENGINE=kokoro 时需要。torch 仅 CPU。
+#
+# ⚠️ 必须锁版本：kokoro 0.7.x 对 transformers / torch 的声明是无上限的
+# （Requires-Dist: torch / transformers，无任何版本约束）。若放任 pip 拉最新，
+# 会装到 transformers 5.x + torch 2.14，而 kokoro 的 self.bert（BertModel）调用
+# 在 transformers 5.x 下会触发 `Boolean value of Tensor with more than one value
+# is ambiguous`（多元素张量被当作 bool 判断），导致合成随机崩（部分英文 chunk /
+# 全部日文）。锁到 kokoro 0.7.16 同代（torch 2.5 + transformers 4.46）即可规避。
+torch==2.5.1
+transformers==4.46.3
+kokoro==0.7.16
+misaki[en,ja]==0.9.4
+soundfile==0.14.0
+numpy==1.26.4
