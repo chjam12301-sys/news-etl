@@ -300,6 +300,21 @@ def _reserve_target(db: Session, day: dt.date, raws: list[RawArticle]) -> tuple[
     return article, created
 
 
+async def _safe_alt_voices(db: Session, article: Article) -> dict[str, Any]:
+    """可选音色预热：best-effort，绝不让它失败中断日报（用户明确要容错）。"""
+    from .alt_voices import warm_alt_voices
+
+    try:
+        return await warm_alt_voices(db, article)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[alt] 可选音色整体失败（不影响已发布内容）：%s", exc)
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return {"status": "failed", "error": type(exc).__name__}
+
+
 async def run_daily(
     topics: list[str] | None = None,
     per_topic: int | None = None,
@@ -351,6 +366,9 @@ async def run_daily(
                 db.commit()
                 if totals["audio_errors"]:
                     raise RuntimeError("default audio incomplete; rerun resumes missing assets")
+                # 可选音色（4 音色 × 5 英语等级）：best-effort + 重试，失败不阻断发布。
+                # 放在 export 之前，这样详情 JSON 里就能带上 audio.alternates。
+                totals["alt_voices"] = await _safe_alt_voices(db, article)
                 from .exporter import export_all
                 export_result = export_all(db)
                 totals["export"] = "ok" if export_result.get("exported") else "skipped"
@@ -367,12 +385,9 @@ async def run_daily(
                         totals["git_pruned"] = storage.prune(settings.github_keep_days)["deleted"]
                     except Exception:
                         totals["prune"] = "failed"
-            if warmup_only or totals.get("publish_ok"):
-                from .voice_warmup import warmup_article
-                try:
-                    totals["voice_warmup"] = await warmup_article(db, article.id)
-                except Exception as exc:
-                    totals["voice_warmup"] = {"status": "failed", "error": type(exc).__name__}
+            if warmup_only:
+                # 仅补可选音色：不抓新闻、不改写、不发布（与 --warmup-only 语义一致）
+                totals["alt_voices"] = await _safe_alt_voices(db, article)
             job.status = "success"
         except Exception as exc:
             db.rollback()

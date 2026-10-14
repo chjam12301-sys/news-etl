@@ -4,11 +4,11 @@
 
 同日重跑复用按 `fetched_at,id` 排序的第一篇；失败留下的文章继续补缺失等级和默认音频。数据库事务锁防止 API、CLI 与 Actions 并发创建第二篇。`--force` 只处理当日目标缺少译文的等级；daily 不支持清空历史。
 
-四阶段发布成功后调用 Cloudflare Worker，为当日目标的五个英语等级投递 Ava、Emma、Sonia、Guy，共 20 份。日语和默认 Aria 不受影响。预热采用原有去重键，重复提交复用已有结果；accepted 表示 Worker 已受理，最终生成由 Worker Queue 负责。预热失败单独记录，不回滚已发布新闻。
+可选音色（默认音色之外的 4 个 Kokoro 音色：`af_bella` / `am_michael` / `bf_emma` / `bm_george`）由**本流水线用 Kokoro 自托管生成**：为当日目标的五个英语等级各生成一份，共 20 份，音频落 R2（`audio/<id>/<level>_<voice>.mp3`），元数据写入 `alt_voice_assets` 表，随详情 JSON 的 `audio.alternates` 一起发布。日语与默认音色不受影响。
 
-## 部署配置
+生成**在 export 之前**执行，best-effort：每份独立**重试 3 次**（指数退避）、已存在的**跳过**（可续跑）、单份失败只记录，**绝不回滚已发布内容**。音色清单由 env `ALT_VOICES` 覆盖（逗号分隔）。
 
-在 GitHub Actions Secrets 与 Worker secret 配置同一个 `VOICE_WARMUP_TOKEN`。发布端通过 `Authorization: Bearer` 发送；不写入仓库、数据库或日志。Worker URL 固定为 `https://day-voice-api.innertalkdiary.workers.dev`。发布方绕过 IP 限额，保留全局每日 50 份限制。
+> 历史：该链路原走外部 Cloudflare Worker（`day-voice-api.innertalkdiary.workers.dev`，微软 edge-tts 音色 Ava/Emma/Sonia/Guy）。该 Worker 现返回 `503 generation_unavailable`（微软端点对数据中心 IP 封 403），已废弃，改为 Kokoro 自托管。
 
 ## 安全重跑
 

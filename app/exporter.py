@@ -59,7 +59,7 @@ def _audio_meta(v: ArticleVersion, base: str, rev: str = "") -> dict[str, Any] |
             f"{base}/audio/{v.article_id}/{v.level_code}.{ext}"
             if base else f"/api/v1/audio/{a.id}.mp3"
         )
-    return {
+    meta = {
         "id": a.id,
         "url": url,
         "duration": round(a.duration_ms / 1000, 3),
@@ -69,6 +69,24 @@ def _audio_meta(v: ArticleVersion, base: str, rev: str = "") -> dict[str, Any] |
         "word_count": len(a.timeline or []),
         "has_timeline": bool(a.timeline),
     }
+    # 可选音色（默认音色之外）。索引里只放元数据（精简）；详情里再补 timeline。
+    alts: list[dict[str, Any]] = []
+    for alt in (v.alt_audios or []):
+        alt_url = alt.public_url or public_audio_url(file_path=alt.file_path or "")
+        if not alt_url:
+            continue
+        alts.append({
+            "voice": alt.voice,
+            "url": alt_url,
+            "duration": round(alt.duration_ms / 1000, 3),
+            "size_bytes": alt.size_bytes,
+            "engine": alt.engine,
+            "word_count": len(alt.timeline or []),
+            "has_timeline": bool(alt.timeline),
+        })
+    if alts:
+        meta["alternates"] = alts
+    return meta
 
 
 def _image_meta(a: Article) -> dict[str, Any]:
@@ -181,6 +199,12 @@ def _version_detail(v: ArticleVersion, a: Article, base: str, rev: str = "") -> 
             "created_at": v.created_at.isoformat() if v.created_at else None,
         }
     )
+    # 可选音色：详情里把各音色的词级时间轴塞进对应 alternate（自包含，App 一次拿全）
+    audio = d.get("audio")
+    if audio and audio.get("alternates"):
+        by_voice = {a.voice: (a.timeline or []) for a in (v.alt_audios or [])}
+        for alt in audio["alternates"]:
+            alt["timeline"] = by_voice.get(alt["voice"], [])
     return d
 
 
@@ -289,7 +313,7 @@ def export_index(db: Session, days: int = MAX_DAYS_IN_INDEX, rev: str = "") -> s
         rows = db.execute(
             select(ArticleVersion, Article)
             .join(Article, Article.id == ArticleVersion.article_id)
-            .options(selectinload(ArticleVersion.audio))
+            .options(selectinload(ArticleVersion.audio), selectinload(ArticleVersion.alt_audios))
             .where(Article.published_date == d)
             .order_by(Article.id, ArticleVersion.lang, ArticleVersion.level)
         ).all()

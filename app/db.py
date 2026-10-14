@@ -194,6 +194,10 @@ class ArticleVersion(Base):
     audio: Mapped["AudioAsset | None"] = relationship(
         back_populates="version", cascade="all, delete-orphan", uselist=False
     )
+    # 可选音色（默认音色之外的发音人）—— 与 audio 分开存，互不干扰
+    alt_audios: Mapped[list["AltVoiceAsset"]] = relationship(
+        back_populates="version", cascade="all, delete-orphan"
+    )
 
 
 class AudioAsset(Base):
@@ -226,6 +230,37 @@ class AudioAsset(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
 
     version: Mapped[ArticleVersion] = relationship(back_populates="audio")
+
+
+class AltVoiceAsset(Base):
+    """同一版本「可选音色」的音频（默认音色之外），如 af_bella / am_michael。
+
+    与 AudioAsset 解耦：一份 version 仍是 1 个默认 audio + N 个可选音色。
+    新表由 Base.metadata.create_all 自动建，不需要 ALTER 迁移。
+    """
+
+    __tablename__ = "alt_voice_assets"
+    __table_args__ = (
+        UniqueConstraint("version_id", "voice", name="uq_altversion_voice"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    version_id: Mapped[int] = mapped_column(
+        ForeignKey("article_versions.id", ondelete="CASCADE"), index=True
+    )
+    voice: Mapped[str] = mapped_column(String(64), index=True)
+
+    file_path: Mapped[str] = mapped_column(Text)
+    public_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    # 词级时间轴（与默认音色同 schema，供 App 切换音色后继续高亮）
+    timeline: Mapped[list[Any]] = mapped_column(JSON, default=list)
+
+    engine: Mapped[str] = mapped_column(String(32), default="kokoro")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
+
+    version: Mapped[ArticleVersion] = relationship(back_populates="alt_audios")
 
 
 class JobRun(Base):

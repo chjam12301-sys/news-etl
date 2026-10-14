@@ -37,10 +37,8 @@ class Settings(BaseSettings):
     openrouter_model: str = "deepseek/deepseek-chat-v3-0324:free"
 
     # ---- TTS -----------------------------------------------------------
-    # edge-tts 免费无鉴权，原生返回逐词时间戳
-    voice_worker_url: str = "https://day-voice-api.innertalkdiary.workers.dev"
-    voice_warmup_token: str = ""
-
+    # Kokoro OSS（CI 内自托管，免费不绑卡）。可选音色清单由 env ALT_VOICES 覆盖
+    # （见 app/alt_voices.py::DEFAULT_VOICES）。不再依赖任何外部音色 Worker。
     tts_enabled: bool = True
     tts_voice_en: str = "en-US-AriaNeural"
     tts_voice_ja: str = "ja-JP-NanamiNeural"

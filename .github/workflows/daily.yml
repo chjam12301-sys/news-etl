@@ -241,11 +241,12 @@ jobs:
           # TTS —— 切换至 Kokoro OSS（CI 内自托管，免费不绑卡）。
           # 微软 readaloud 端点对数据中心 IP 封 403，edge-tts 直连已不可用；
           # Kokoro 原生暴露 token 级时间戳，可重建词级时间轴，App 跟读高亮照常。
-          VOICE_WARMUP_TOKEN: ${{ secrets.VOICE_WARMUP_TOKEN }}
           TTS_ENABLED: "true"
           TTS_ENGINE: kokoro
           TTS_VOICE_EN: af_heart
           TTS_VOICE_JA: jf_alpha
+          # 可选音色（默认音色之外的 4 个 Kokoro 音色，本流水线自托管生成）
+          ALT_VOICES: af_bella,am_michael,bf_emma,bm_george
 
           # 回退开关：把 TTS_ENGINE 改回 edge-tts 即回退原链路（此时 TTS_VOICE_EN/JA
           # 需改回微软 voice id）。EDGE_TTS_PROXY 仅在 edge-tts 模式下用于代理出口。

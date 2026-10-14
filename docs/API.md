@@ -8,6 +8,7 @@
 
 | 版本 | 日期 | 状态 | 摘要 |
 |---|---|---|---|
+| **v2.9** | 2026-10-14 | ✅ 可用 | 🔴 **可选音色（必读）**：英语等级新增 `audio.alternates[]`（4 个 Kokoro 发音人，含 url/duration/timeline），App 可整篇换音色播放 |
 | **v2.8** | 2026-10-14 | ✅ 可用 | 🔴 **换 TTS 引擎（必读）**：edge-tts → Kokoro OSS；`audio.voice` 取值改为 `af_heart`（英）/ `jf_alpha`（日），音频仍为 `.mp3`（48kbps mono），`timeline` 字段与语义不变 |
 | **v2.7** | 2026-10-09 | ✅ 可用 | 🔴 **封面图与署名（必读）**：配图改多级图源优先 Unsplash；`image` 增 `provider` / `author` / `source` / `source_url` / `fallback` |
 | **v2.6** | 2026-10-09 | ✅ 可用 | 🔴 **音频地址换域名**：由 `cdn.jsdelivr.net` 改为 `pub-aba43a6fb1db4dc08fede1dbc81f3241.r2.dev`（对象存储） |
@@ -18,6 +19,46 @@
 | **v2.1** | 2026-10-07 | ✅ 可用 | CDN 链接从写死 SHA 改为运行时查询（修「详情无时间轴」） |
 
 > 字段只增不改，**v2.0 的客户端代码无需修改即可跑在 v2.2 上**。
+
+---
+
+## 📌 v2.9 · 可选音色：`audio.alternates`（🔴 必读）
+
+**每个英语等级现在最多附 4 个可选发音人。`audio.alternates[]` 列出它们
+（音频 URL + 词级时间轴），App 可整篇换音色播放并保持高亮。**
+
+| | v2.8 | v2.9 |
+|---|---|---|
+| `audio` | 单个默认音色 | 增 `alternates[]`（可选，最多 4 个） |
+| 音色 | `af_heart` | `af_bella` / `am_michael` / `bf_emma` / `bm_george` |
+| 作用域 | — | **仅英语 5 个等级**（日语、`ja_*` 无 `alternates`） |
+| 引擎 | Kokoro | 同为 Kokoro（与默认音色同源） |
+
+`audio.alternates[i]` 与默认 `audio` **同构**：`voice` / `url` / `duration` / `size_bytes` /
+`engine` / `word_count` / `has_timeline`。
+
+**详情 JSON 里每个 alternate 还带 `timeline`**（与顶层 `timeline` 完全同 schema，
+`cs/ce/s/e/w` 一致）；**索引/列表里的 `alternates` 不带 `timeline`**，保持精简。
+
+```
+audio.alternates = [
+  { "voice": "af_bella",  "url": "…/en_b1_af_bella.mp3",  "duration": 53.9, "size_bytes": 312000, "timeline": [...] },
+  { "voice": "am_michael", "url": "…/en_b1_am_michael.mp3", "duration": 52.1, "size_bytes": 305000, "timeline": [...] },
+  …
+]
+```
+
+**App 侧要做的**
+
+1. 换音色播放：用 `alternates[i].url` 换音频源，`alternates[i].timeline` 做逐词高亮；
+2. 若不做这个功能：**忽略 `alternates` 即可**（字段只增不改，老客户端不受影响）。
+
+**硬约束 / 注意**
+
+- 可选音色是**异步补全**的：生成在发布前 **best-effort**（每份重试 3 次、可续跑）。
+  因此**首次发布时 `alternates` 可能缺失或不足 4 个** —— App 必须容忍，**不要写死 4**。
+- 只覆盖**英语**等级；日语等级没有可选音色。
+- 路径规则：`audio/<article_id>/<level_code>_<voice>.mp3`（`audio/<值>/<默认音频>` 之外的新形态）。
 
 ---
 
@@ -614,7 +655,11 @@ const item = day.versions.ja.ja_n3.find(x => x.article_id === currentId);
     "engine": "kokoro",
     "voice": "af_heart",
     "word_count": 189,
-    "has_timeline": true
+    "has_timeline": true,
+    "alternates": [
+      { "voice": "af_bella",   "url": "https://pub-aba43a6fb1db4dc08fede1dbc81f3241.r2.dev/audio/1/en_a1_af_bella.mp3",   "duration": 74.1, "size_bytes": 448000, "engine": "kokoro", "word_count": 189, "has_timeline": true },
+      { "voice": "am_michael", "url": "https://pub-aba43a6fb1db4dc08fede1dbc81f3241.r2.dev/audio/1/en_a1_am_michael.mp3", "duration": 72.3, "size_bytes": 437000, "engine": "kokoro", "word_count": 189, "has_timeline": true }
+    ]
   },
 
   "detail_url": "https://cdn.jsdelivr.net/.../content/data/versions/1.json"
@@ -918,6 +963,8 @@ function render(detail, t) {
 | `audio.engine` | `kokoro` |
 | 音色（英） | `af_heart` |
 | 音色（日） | `jf_alpha` |
+| 可选音色（英） | `af_bella` / `am_michael` / `bf_emma` / `bm_george`（见 `audio.alternates`，v2.9） |
+| 可选音色路径 | `/audio/{article_id}/{level_code}_{voice}.mp3` |
 | 实测时长 | en_a1 74s / en_b2 128s / en_c1 165s / ja_n5 98s / ja_n1 355s |
 | Range 请求 | ✅ 支持（可拖动进度条） |
 

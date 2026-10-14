@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from app import pipeline, fetcher, voice_warmup
+from app import pipeline, fetcher, alt_voices
 from app.db import Base, Article, ArticleVersion, AudioAsset, JobRun
 from app.levels import ALL_LEVELS
 
@@ -125,11 +125,13 @@ async def test_publication_result_controls_status_and_warmup(sessions, monkeypat
     monkeypatch.setattr(exporter, "export_all", lambda db: {"exported": True})
     monkeypatch.setattr(publish, "publish_all", lambda **kw: {"ok": publish_ok})
     warmup = AsyncMock(side_effect=RuntimeError("voice unavailable"))
-    monkeypatch.setattr(voice_warmup, "warmup_article", warmup)
+    monkeypatch.setattr(alt_voices, "warm_alt_voices", warmup)
     result = await pipeline.run_daily(force=True)
     assert result["status"] == ("success" if publish_ok else "failed")
     assert result["stats"]["article_id"] == article_id
-    assert warmup.await_count == int(publish_ok)
+    # 可选音色在 export 之前 best-effort 跑一次；抛错被吞掉，绝不连累发布
+    assert warmup.await_count == 1
+    assert result["stats"]["alt_voices"]["status"] == "failed"
     with sessions() as db:
         assert db.scalar(select(JobRun)).status == result["status"]
         assert len(db.scalars(select(Article)).all()) == 1
@@ -143,10 +145,10 @@ async def test_warmup_only_does_not_process_or_publish(sessions, monkeypatch):
     monkeypatch.setattr(pipeline, "init_db", lambda: None)
     monkeypatch.setattr(pipeline, "_process_article", AsyncMock(side_effect=AssertionError()))
     monkeypatch.setattr(pipeline, "get_storage", Mock(side_effect=AssertionError()))
-    monkeypatch.setattr(voice_warmup, "warmup_article", AsyncMock(return_value={"accepted": 20}))
+    monkeypatch.setattr(alt_voices, "warm_alt_voices", AsyncMock(return_value={"generated": 20}))
     result = await pipeline.run_daily(warmup_only=True)
     assert result["status"] == "success"
-    assert result["stats"]["voice_warmup"]["accepted"] == 20
+    assert result["stats"]["alt_voices"]["generated"] == 20
 
 
 @pytest.mark.asyncio
@@ -156,26 +158,37 @@ async def test_reset_rejected():
 
 
 @pytest.mark.asyncio
-async def test_warmup_twenty_requests_reuses_exact_contract(sessions, monkeypatch):
-    monkeypatch.setattr(voice_warmup.settings, "voice_warmup_token", "test-only")
+async def test_alt_voices_generates_missing_and_skips_existing(sessions, monkeypatch):
+    """可选音色：缺失的生成、已存在的跳过；单份失败不影响其它。"""
+    from app import alt_voices as av
+
+    monkeypatch.setattr(av, "alt_voices", lambda: ("v1", "v2"))
+    monkeypatch.setattr(av.settings, "tts_enabled", True)
     calls = []
-    def handle(request):
-        assert request.headers["Authorization"] == "Bearer test-only"
-        parts = request.url.path.split("/")
-        calls.append(request)
-        if request.method == "GET":
-            return httpx.Response(200, json={"article_id": int(parts[3]), "level_code": parts[5],
-                "content_version": int(parts[7]), "legacy_content_hash": "a" * 16, "text_identity": "b" * 64})
-        return httpx.Response(202, json={"status": "pending", "job_id": "same-key"})
+
+    async def fake_synth(text, lang, voice=None):
+        calls.append((lang, voice))
+        if voice == "v2":
+            raise RuntimeError("boom")
+        return SimpleNamespace(audio_bytes=b"ID3xxxx", duration=1.5,
+                               engine="kokoro", timeline_dict=lambda: [{"i": 0}])
+
+    monkeypatch.setattr(av, "synthesize", fake_synth)
+    monkeypatch.setattr(av.asyncio, "sleep", AsyncMock())
+    put = Mock()
+    storage = SimpleNamespace(put=put)
     with sessions() as db:
         article = add_article(db)
-        add_versions(db, article)
-        for _ in range(2):
-            result = await voice_warmup.warmup_article(db, article.id, transport=httpx.MockTransport(handle))
-            assert result["accepted"] == 20 and result["failed"] == 0
-    assert len(calls) == 50
-    assert all("/levels/en_" in str(req.url) for req in calls)
-    assert not any("aria:ensure" in str(req.url) for req in calls)
+        add_versions(db, article, codes={"en_a1"})
+        stats = await av.warm_alt_voices(db, article, storage=storage)
+        assert stats["generated"] == 1 and stats["failed"] == 1
+        # v2 重试 3 次后才放弃
+        assert sum(1 for _, v in calls if v == "v2") == 3
+        # 续跑：已存在的 v1 被跳过，不再合成
+        calls.clear()
+        stats2 = await av.warm_alt_voices(db, article, storage=storage)
+        assert stats2["skipped"] == 1 and stats2["failed"] == 1
+        assert all(v != "v1" for _, v in calls)
 
 
 def test_date_repair_exact_match_and_dry(sessions):
@@ -235,45 +248,6 @@ def test_concurrent_reservation_creates_one_article(tmp_path):
         results = list(pool.map(reserve, range(2)))
     assert results[0][0] == results[1][0]
     assert sum(created for _, created in results) == 1
-
-@pytest.mark.asyncio
-async def test_warmup_retries_new_cdn_and_reports_one_failed_asset(sessions, monkeypatch):
-    monkeypatch.setattr(voice_warmup.settings, "voice_warmup_token", "test-only")
-    monkeypatch.setattr(voice_warmup.asyncio, "sleep", AsyncMock())
-    get_attempts = 0
-    def handle(request):
-        nonlocal get_attempts
-        parts = request.url.path.split("/")
-        if request.method == "GET":
-            get_attempts += 1
-            if get_attempts == 1:
-                return httpx.Response(409, json={"error": "old CDN"})
-            return httpx.Response(200, json={"article_id": int(parts[3]), "level_code": parts[5],
-                "content_version": int(parts[7]), "legacy_content_hash": "a" * 16, "text_identity": "b" * 64})
-        if parts[5] == "en_a1" and "guy:ensure" in request.url.path:
-            return httpx.Response(503, json={"error": "temporary"})
-        return httpx.Response(200, json={"status": "ready", "job_id": "existing"})
-    with sessions() as db:
-        article = add_article(db)
-        add_versions(db, article)
-        result = await voice_warmup.warmup_article(db, article.id, transport=httpx.MockTransport(handle))
-    assert result["accepted"] == 19 and result["failed"] == 1
-    assert get_attempts == 6
-    assert result["items"][3]["voice"] == "guy"
-
-
-@pytest.mark.asyncio
-async def test_warmup_mismatched_manifest_never_submits(sessions, monkeypatch):
-    monkeypatch.setattr(voice_warmup.settings, "voice_warmup_token", "test-only")
-    def handle(request):
-        assert request.method == "GET"
-        return httpx.Response(200, json={"article_id": 999})
-    with sessions() as db:
-        article = add_article(db)
-        add_versions(db, article)
-        result = await voice_warmup.warmup_article(db, article.id, transport=httpx.MockTransport(handle))
-    assert result["accepted"] == 0 and result["failed"] == 20
-
 
 def test_date_move_has_no_duplicates_in_reachable_daily_indexes(sessions, monkeypatch, tmp_path):
     import json
@@ -342,7 +316,7 @@ async def test_audio_failure_stops_daily_before_export(sessions, monkeypatch, le
     monkeypatch.setattr(exporter, "export_all", forbidden)
     monkeypatch.setattr(publish, "publish_all", forbidden)
     warmup = AsyncMock(side_effect=AssertionError("must not warm up"))
-    monkeypatch.setattr(voice_warmup, "warmup_article", warmup)
+    monkeypatch.setattr(alt_voices, "warm_alt_voices", warmup)
     result = await pipeline.run_daily()
     assert result["status"] == "failed"
     assert result["stats"]["audio_errors"] == 1

@@ -476,7 +476,7 @@ def _encode_mp3(pcm: bytes, sample_rate: int = 24000, bitrate: int = 48) -> byte
     return mp3
 
 
-async def _synth_kokoro(text: str, lang: str) -> TTSResult:
+async def _synth_kokoro(text: str, lang: str, voice: str | None = None) -> TTSResult:
     """Kokoro OSS 合成：返回 WAV 音频 + 词级 boundaries，复用下游 _map_boundaries_to_text。
 
     Kokoro 的 KPipeline 原生暴露 result.tokens（misaki MToken），每个 token 带
@@ -487,7 +487,7 @@ async def _synth_kokoro(text: str, lang: str) -> TTSResult:
     空音频 / 无 token 时间戳必须 raise（no-silent-tts），不得产出静默占位。
     """
     lang_code = "j" if lang == "ja" else "a"
-    voice = _kokoro_voice(lang)
+    voice = voice or _kokoro_voice(lang)
     pipeline = await asyncio.to_thread(_get_kokoro_pipeline, lang_code)
     spoken = normalize_for_tts(text)
 
@@ -576,7 +576,7 @@ async def synthesize(text: str, lang: str, voice: str | None = None) -> TTSResul
     engine = os.environ.get("TTS_ENGINE", "edge-tts").lower()
     try:
         if engine == "kokoro":
-            res = await asyncio.wait_for(_synth_kokoro(text, lang), timeout=300)
+            res = await asyncio.wait_for(_synth_kokoro(text, lang, voice), timeout=300)
         else:
             res = await asyncio.wait_for(_synth_edge(text, voice or _pick_voice(lang)), timeout=180)
     except Exception as exc:
