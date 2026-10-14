@@ -32,6 +32,18 @@ async def _request(client: httpx.AsyncClient, method: str, path: str, **kwargs) 
     raise RuntimeError("request retries exhausted")
 
 
+def _err(exc: Exception) -> str:
+    """把异常压成可诊断字符串：带 HTTP 状态码与响应体片段。
+    之前只记 type(exc).__name__（恒为 "HTTPStatusError"），无法区分 401/404/429/5xx。"""
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        try:
+            return f"{type(exc).__name__} {resp.status_code} {resp.text[:120]!r}"
+        except Exception:  # noqa: BLE001
+            return f"{type(exc).__name__} {getattr(resp, 'status_code', '?')}"
+    return f"{type(exc).__name__}: {exc}"
+
+
 async def warmup_article(db: Session, article_id: int, *, transport=None) -> dict:
     result = {"article_id": article_id, "accepted": 0, "failed": 0, "items": []}
     if not settings.voice_warmup_token:
@@ -60,7 +72,7 @@ async def warmup_article(db: Session, article_id: int, *, transport=None) -> dic
             except Exception as exc:
                 for voice in VOICES:
                     result["items"].append({"level": level.code, "voice": voice,
-                                            "status": "failed", "error": type(exc).__name__})
+                                            "status": "failed", "error": _err(exc)})
                 result["failed"] += 4
                 continue
             for voice in VOICES:
@@ -73,7 +85,7 @@ async def warmup_article(db: Session, article_id: int, *, transport=None) -> dic
                     item.update(status=job["status"], job_id=job.get("job_id"))
                     result["accepted"] += 1
                 except Exception as exc:
-                    item.update(status="failed", error=type(exc).__name__)
+                    item.update(status="failed", error=_err(exc))
                     result["failed"] += 1
                 result["items"].append(item)
     result["status"] = "accepted" if result["failed"] == 0 else "partial"
