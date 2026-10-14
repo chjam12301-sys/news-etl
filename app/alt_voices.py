@@ -22,12 +22,16 @@ Worker 现返回 `503 generation_unavailable`（微软端点对数据中心 IP �
 产出
 ----
 - 音频进对象存储：`audio/<article_id>/<level_code>_<voice>.<ext>`（不进 Git）；
-- 元数据（含词级时间轴）落 `alt_voice_assets`，并**重算该版本的 content_hash**
-  ——否则「后补的音色」不会改变指纹，App 会判定内容未更新而永远拉不到。
+- 词级时间轴**单独一个 JSON 对象**：`timeline/<article_id>/<level_code>_<voice>.json`
+  （与音频同桶）。**不内联进详情 JSON** —— 内联 4 份会让最大等级的详情膨胀 3~4 倍，
+  而用户绝大多数时候并不会切音色；
+- 元数据落 `alt_voice_assets`，并**重算该版本的 content_hash** ——否则「后补的音色」
+  不会改变指纹，App 会判定内容未更新而永远拉不到。
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -35,7 +39,13 @@ import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .audio_store import AUDIO_CONTENT_TYPES, get_audio_storage, public_audio_url, sniff_audio
+from .audio_store import (
+    AUDIO_CONTENT_TYPES,
+    get_audio_storage,
+    public_audio_url,
+    sniff_audio,
+    timeline_object_key,
+)
 from .config import settings
 from .content_hash import from_version
 from .db import AltVoiceAsset, ArticleVersion
@@ -126,6 +136,14 @@ async def _one(
             ext, ctype = AUDIO_CONTENT_TYPES[fmt]
             key = _alt_key(version.article_id, version.level_code, voice, ext)
             storage.put(key, res.audio_bytes, content_type=ctype)
+            # 时间轴单独存一个 JSON 对象（与音频同桶），不内联进详情 JSON：
+            # 内联会让最大等级的详情膨胀 3~4 倍，而用户通常并不会切音色。
+            timeline = res.timeline_dict()
+            storage.put(
+                timeline_object_key(version.article_id, version.level_code, voice),
+                json.dumps(timeline, ensure_ascii=False).encode("utf-8"),
+                content_type="application/json; charset=utf-8",
+            )
             row = db.scalar(
                 select(AltVoiceAsset).where(
                     AltVoiceAsset.version_id == version.id, AltVoiceAsset.voice == voice
@@ -146,7 +164,7 @@ async def _one(
             row.public_url = public_audio_url(file_path=key) or ""
             row.duration_ms = int(res.duration * 1000)
             row.size_bytes = len(res.audio_bytes)
-            row.timeline = res.timeline_dict()
+            row.timeline = timeline
             row.engine = res.engine
             # 逐份提交：下一份失败时的 rollback 不能把这一份已完成的成果带走
             #（否则「可续跑」名存实亡，重跑会全部重来）。
@@ -172,6 +190,33 @@ async def _one(
     )
 
 
+def _ensure_timeline(storage, version: ArticleVersion, row: AltVoiceAsset, stats: dict) -> None:
+    """自愈：DB 行在、但时间轴对象缺失时补传（**不重新合成**，时间轴就在行里）。
+
+    例：改成"时间轴单独存"之前生成的历史音色，只有音频没有时间轴对象。
+    幂等覆盖，代价只是一次小 PUT。
+    """
+    key = timeline_object_key(version.article_id, version.level_code, row.voice)
+    exists = getattr(storage, "exists", None)
+    if exists is not None and row.timeline:
+        try:
+            if exists(key):
+                return
+        except Exception:  # noqa: BLE001
+            pass  # 查不到就当作不存在，补传一次
+    if not row.timeline:
+        return
+    try:
+        storage.put(
+            key,
+            json.dumps(row.timeline, ensure_ascii=False).encode("utf-8"),
+            content_type="application/json; charset=utf-8",
+        )
+        stats["timeline_uploaded"] += 1
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[alt] 补传时间轴失败 %s：%s", key, exc)
+
+
 async def warm_alt_voices(
     db: Session, article, *, storage=None, with_tts: bool = True
 ) -> dict:
@@ -182,6 +227,7 @@ async def warm_alt_voices(
         "skipped": 0,
         "failed": 0,
         "removed": 0,
+        "timeline_uploaded": 0,
         "items": [],
     }
     if not with_tts or not settings.tts_enabled:
@@ -216,16 +262,18 @@ async def warm_alt_voices(
                 {"level": level.code, "status": "skipped", "reason": "no_default_audio"}
             )
             continue
-        have = {
-            r.voice
+        rows = {
+            r.voice: r
             for r in db.scalars(
                 select(AltVoiceAsset).where(AltVoiceAsset.version_id == version.id)
             )
         }
         _drop_stale(db, version, keep, storage, stats)
         for voice in voices:
-            if voice in have:
+            row = rows.get(voice)
+            if row is not None:
                 stats["skipped"] += 1
+                _ensure_timeline(storage, version, row, stats)
                 continue
             await _one(db, version, voice, storage, stats)
         _refresh_hash(db, version)

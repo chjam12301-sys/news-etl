@@ -35,22 +35,33 @@
 | 引擎 | Kokoro | 同为 Kokoro（与默认音色同源） |
 
 `audio.alternates[i]` 与默认 `audio` **同构**：`voice` / `url` / `duration` / `size_bytes` /
-`engine` / `word_count` / `has_timeline`。
+`engine` / `word_count` / `has_timeline`，另加一个 **`timeline_url`**。
 
-**详情 JSON 里每个 alternate 还带 `timeline`**（与顶层 `timeline` 完全同 schema，
-`cs/ce/s/e/w` 一致）；**索引/列表里的 `alternates` 不带 `timeline`**，保持精简。
+**时间轴不内联**：每个可选音色的词级时间轴是一个**独立 JSON 文件**，与音频同样放在对象存储、
+URL 永久稳定：
+
+```
+alternates[i].timeline_url = "https://<base>/timeline/{article_id}/{level_code}_{voice}.json"
+```
+
+内容是**词级数组**，与顶层 `timeline` 完全同 schema（`i/w/cs/ce/sm/em/si`）。
+
+> 为什么不给内联：4 份时间轴会让最大等级（en_c1）的详情从 ~59KB 涨到 ~217KB，
+> 而用户绝大多数时候**不会切音色** —— 内联等于让所有人每次下详情都多付 3~4 倍流量。
 
 ```
 audio.alternates = [
-  { "voice": "af_bella",  "url": "…/en_b1_af_bella.mp3",  "duration": 53.9, "size_bytes": 312000, "timeline": [...] },
-  { "voice": "am_michael", "url": "…/en_b1_am_michael.mp3", "duration": 52.1, "size_bytes": 305000, "timeline": [...] },
+  { "voice": "af_bella",   "url": "…/en_b1_af_bella.mp3",   "duration": 53.9, "size_bytes": 312000,
+    "word_count": 181, "has_timeline": true,
+    "timeline_url": "…/timeline/66/en_b1_af_bella.json" },
   …
 ]
 ```
 
 **App 侧要做的**
 
-1. 换音色播放：用 `alternates[i].url` 换音频源，`alternates[i].timeline` 做逐词高亮；
+1. 换音色播放：用 `alternates[i].url` 换音频源；高亮则**按需**拉 `alternates[i].timeline_url`
+   （建议缓存，key 用 `voice + content_hash`）；
 2. 若不做这个功能：**忽略 `alternates` 即可**（字段只增不改，老客户端不受影响）。
 
 **硬约束 / 注意**
@@ -61,8 +72,9 @@ audio.alternates = [
 - 可选音色变化（新增/下架/重新生成）会**改变 `content_hash`**，App 会据此重新下载详情——
   这与文档其它章节「内容更新只看 content_hash」的契约一致，无需额外强刷逻辑。
 - 只覆盖**英语**等级；日语等级没有可选音色。
-- 路径规则：`audio/<article_id>/<level_code>_<voice>.<ext>`（`.mp3`；仅当 MP3 编码器不可用时
-  会退化为 `.wav`，两种都已在 `alternates[i].url` 里给出实际地址，**按 URL 结尾判断即可**）。
+- 路径规则：音频 `audio/<article_id>/<level_code>_<voice>.<ext>`、时间轴
+  `timeline/<article_id>/<level_code>_<voice>.json`。扩展名以实际返回为准（MP3 编码器不可用时
+  音频会退化为 `.wav`），**按 URL 取用，不要自己拼**。
 
 ---
 

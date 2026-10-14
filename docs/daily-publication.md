@@ -4,7 +4,7 @@
 
 同日重跑复用按 `fetched_at,id` 排序的第一篇；失败留下的文章继续补缺失等级和默认音频。数据库事务锁防止 API、CLI 与 Actions 并发创建第二篇。`--force` 只处理当日目标缺少译文的等级；daily 不支持清空历史。
 
-可选音色（默认音色之外的 4 个 Kokoro 音色：`af_bella` / `am_michael` / `bf_emma` / `bm_george`）由**本流水线用 Kokoro 自托管生成**：为当日目标的五个英语等级各生成一份，共 20 份，音频落 R2（`audio/<id>/<level>_<voice>.<mp3|wav>`），元数据写入 `alt_voice_assets` 表，随详情 JSON 的 `audio.alternates` 一起发布。日语与默认音色不受影响。
+可选音色（默认音色之外的 4 个 Kokoro 音色：`af_bella` / `am_michael` / `bf_emma` / `bm_george`）由**本流水线用 Kokoro 自托管生成**：为当日目标的五个英语等级各生成一份，共 20 份。音频落对象存储 `audio/<id>/<level>_<voice>.<ext>`，**词级时间轴单独存 `timeline/<id>/<level>_<voice>.json`**（与音频同桶、URL 永久稳定、**不内联进详情 JSON**——内联会让最大等级的详情膨胀 3~4 倍，而用户通常并不切音色）。元数据写入 `alt_voice_assets`，随详情 JSON 的 `audio.alternates` 一起发布。日语与默认音色不受影响。
 
 生成**排在四阶段发布之后**：音色是增强项，绝不能拖累当天内容发布（20 份 × 3 次重试最坏会把 job 撑到超时被杀）。补完后再发一次——音频在对象存储不进 Git，只需重发 JSON；**没有新增时不重复发布**。因此新文章的首发详情里暂时没有 `alternates`，补发后才有。
 

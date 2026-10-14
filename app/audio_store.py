@@ -123,6 +123,18 @@ def public_audio_url(
     return f"{base}/{audio_object_key(file_path, article_id, level_code)}"
 
 
+# ---- 可选音色的词级时间轴：与音频同样走对象存储，但**单独文件**、按需取 ----
+# 不内联进详情 JSON：4 份时间轴会让最大等级的详情从 ~59KB 涨到 ~217KB，
+# 而用户绝大多数时候根本不会切音色。
+def timeline_object_key(article_id: int, level_code: str, voice: str) -> str:
+    return f"timeline/{article_id}/{level_code}_{voice}.json"
+
+
+def public_timeline_url(article_id: int, level_code: str, voice: str) -> str:
+    base = audio_base_url()
+    return f"{base}/{timeline_object_key(article_id, level_code, voice)}" if base else ""
+
+
 _audio_storage: Any = None
 
 

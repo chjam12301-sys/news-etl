@@ -1,6 +1,7 @@
 import ast
 import asyncio
 import datetime as dt
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -202,6 +203,11 @@ async def test_alt_voices_generates_skips_retries_and_refreshes_hash(sessions, m
         call = put.call_args_list[0]
         assert call.args[0].endswith("_af_bella.wav")
         assert call.kwargs["content_type"] == "audio/wav"
+        # 词级时间轴单独存一个 JSON 对象（与音频同桶），不内联进详情
+        tl_call = put.call_args_list[1]
+        assert tl_call.args[0] == f"timeline/{article.id}/en_a1_af_bella.json"
+        assert tl_call.kwargs["content_type"].startswith("application/json")
+        assert json.loads(tl_call.args[1].decode()) == [{"i": 0}]
 
         calls.clear()
         stats2 = await av.warm_alt_voices(db, article, storage=storage)
@@ -259,6 +265,74 @@ async def test_alt_voices_skip_guards_and_prune_stale(sessions, monkeypatch):
         assert s["removed"] == 1 and s["generated"] == 1
         assert db.scalar(select(AltVoiceAsset).where(AltVoiceAsset.voice == "af_bella")) is None
         assert delete.called
+
+
+@pytest.mark.asyncio
+async def test_alt_voices_self_heals_missing_timeline_object(sessions, monkeypatch):
+    """历史音色只有音频、没有独立时间轴对象时，补传即可，**不重新合成**。"""
+    from app import alt_voices as av
+    from app.db import AltVoiceAsset
+
+    monkeypatch.setattr(av.settings, "tts_enabled", True)
+    monkeypatch.setattr(av, "_engine", lambda: "kokoro")
+    monkeypatch.setattr(av, "alt_voices", lambda: ("af_bella",))
+    synth = AsyncMock(side_effect=AssertionError("must not re-synthesize"))
+    monkeypatch.setattr(av, "synthesize", synth)
+    put = Mock()
+    storage = SimpleNamespace(put=put, delete=Mock(), exists=lambda key: False)
+
+    with sessions() as db:
+        article = add_article(db, title="Self heal timeline story")
+        add_versions(db, article, codes={"en_a1"}, with_audio=True)
+        v = db.scalar(select(ArticleVersion).where(ArticleVersion.level_code == "en_a1"))
+        db.add(AltVoiceAsset(version_id=v.id, voice="af_bella",
+                             file_path=f"audio/{article.id}/en_a1_af_bella.mp3",
+                             duration_ms=1000, size_bytes=100,
+                             timeline=[{"i": 0, "w": "x", "cs": 0, "ce": 1}], engine="kokoro"))
+        db.commit()
+        s = await av.warm_alt_voices(db, article, storage=storage)
+        assert s["skipped"] == 1 and s["generated"] == 0
+        assert s["timeline_uploaded"] == 1
+        synth.assert_not_awaited()
+        put.assert_called_once()
+        assert put.call_args.args[0] == f"timeline/{article.id}/en_a1_af_bella.json"
+
+
+def test_exporter_exposes_timeline_url_and_never_inlines_it(monkeypatch, sessions):
+    """可选音色的时间轴必须是**独立文件的 URL**，不能内联进详情。
+
+    内联 4 份会让最大等级（en_c1）的详情从 ~59KB 涨到 ~217KB，而用户通常并不切音色。
+    """
+    from app import exporter
+    from app.db import AltVoiceAsset
+
+    monkeypatch.setattr(exporter, "public_audio_url",
+                        lambda **kw: "https://cdn.test/" + (kw.get("file_path") or ""))
+    monkeypatch.setattr(exporter, "public_timeline_url",
+                        lambda aid, code, voice: f"https://cdn.test/timeline/{aid}/{code}_{voice}.json")
+    with sessions() as db:
+        article = add_article(db, title="Timeline url story")
+        add_versions(db, article, codes={"en_a1"}, with_audio=True)
+        v = db.scalar(select(ArticleVersion).where(ArticleVersion.level_code == "en_a1"))
+        big_tl = [{"i": i, "w": "x", "cs": i, "ce": i + 1} for i in range(300)]
+        db.add(AltVoiceAsset(version_id=v.id, voice="af_bella",
+                             file_path=f"audio/{article.id}/en_a1_af_bella.mp3",
+                             duration_ms=1000, size_bytes=100, timeline=big_tl, engine="kokoro"))
+        db.commit()
+
+        (alt,) = exporter._audio_meta(v, base="", rev="")["alternates"]
+        assert alt["timeline_url"].endswith(f"/timeline/{article.id}/en_a1_af_bella.json")
+        assert "timeline" not in alt
+
+        detail = exporter._version_detail(v, article, base="", rev="")
+        assert all("timeline" not in x for x in detail["audio"]["alternates"])
+        # 体积守卫：把 300 词的时间轴换成 1 词，详情体积几乎不变 → 证明详情不含它
+        size_big = len(json.dumps(detail, ensure_ascii=False))
+        row = db.scalar(select(AltVoiceAsset))
+        row.timeline = [{"i": 0, "w": "x", "cs": 0, "ce": 1}]
+        db.commit()
+        size_small = len(json.dumps(exporter._version_detail(v, article, base="", rev=""), ensure_ascii=False))
+        assert abs(size_big - size_small) < 300
 
 
 def test_date_repair_exact_match_and_dry(sessions):

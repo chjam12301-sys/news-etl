@@ -296,18 +296,22 @@ def verify_published(
         # 可选音色：同样探测可达性，但**只告警不阻断**（音色是增强项，
         # 默认音频可达才是内容可用性的底线）。共用 audio_checks 缓存，几乎零成本。
         for alt in ((it.get("audio") or {}).get("alternates") or []):
-            alt_url = (alt.get("url") or "").strip()
             voice = alt.get("voice") or "?"
-            if not alt_url.startswith("http"):
-                res.alt_audio_errors.append(f"v{vid} 可选音色 {voice} URL 非 http: {alt_url}")
-                continue
-            if alt_url not in audio_checks:
-                audio_checks[alt_url] = head(alt_url)
-            alt_ok, alt_why = audio_checks[alt_url]
-            if not alt_ok:
-                res.alt_audio_errors.append(
-                    f"v{vid} 可选音色 {voice} 不可访问({alt_why}): {alt_url}"
-                )
+            for label, u in (("音频", (alt.get("url") or "").strip()),
+                             ("时间轴", (alt.get("timeline_url") or "").strip())):
+                if not u:
+                    res.alt_audio_errors.append(f"v{vid} 可选音色 {voice} 缺 {label}地址")
+                    continue
+                if not u.startswith("http"):
+                    res.alt_audio_errors.append(f"v{vid} 可选音色 {voice} {label} URL 非 http: {u}")
+                    continue
+                if u not in audio_checks:
+                    audio_checks[u] = head(u)
+                alt_ok, alt_why = audio_checks[u]
+                if not alt_ok:
+                    res.alt_audio_errors.append(
+                        f"v{vid} 可选音色 {voice} {label}不可访问({alt_why}): {u}"
+                    )
 
         if check_hash:
             raw = _read_in_commit(repo_dir, d_rev or rev, d_rel)

@@ -390,7 +390,7 @@ async def run_daily(
                     # 详情带上 audio.alternates；无新增时不重复发布。
                     alt = await _safe_alt_voices(db, article, with_tts=with_tts)
                     totals["alt_voices"] = alt
-                    if alt.get("generated"):
+                    if alt.get("generated") or alt.get("timeline_uploaded") or alt.get("removed"):
                         export_all(db)
                         pub2 = publish_all(db=db, storage=storage, topics_days=3,
                                            commit_msg=f"content: daily {day} article {article.id}: 可选音色")

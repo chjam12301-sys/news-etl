@@ -23,7 +23,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from .audio_store import public_audio_url, is_playable_audio
+from .audio_store import public_audio_url, public_timeline_url, is_playable_audio
 from .config import settings
 from .db import Article, ArticleVersion
 from .storage import (
@@ -69,7 +69,8 @@ def _audio_meta(v: ArticleVersion, base: str, rev: str = "") -> dict[str, Any] |
         "word_count": len(a.timeline or []),
         "has_timeline": bool(a.timeline),
     }
-    # 可选音色（默认音色之外）。索引里只放元数据（精简）；详情里再补 timeline。
+    # 可选音色（默认音色之外）。时间轴**不内联**，只给 timeline_url：
+    # 内联 4 份会让最大等级的详情从 ~59KB 涨到 ~217KB，而用户通常并不切音色。
     alts: list[dict[str, Any]] = []
     for alt in (v.alt_audios or []):
         alt_url = alt.public_url or public_audio_url(file_path=alt.file_path or "")
@@ -83,6 +84,7 @@ def _audio_meta(v: ArticleVersion, base: str, rev: str = "") -> dict[str, Any] |
             "engine": alt.engine,
             "word_count": len(alt.timeline or []),
             "has_timeline": bool(alt.timeline),
+            "timeline_url": public_timeline_url(v.article_id, v.level_code, alt.voice),
         })
     if alts:
         meta["alternates"] = alts
@@ -199,12 +201,6 @@ def _version_detail(v: ArticleVersion, a: Article, base: str, rev: str = "") -> 
             "created_at": v.created_at.isoformat() if v.created_at else None,
         }
     )
-    # 可选音色：详情里把各音色的词级时间轴塞进对应 alternate（自包含，App 一次拿全）
-    audio = d.get("audio")
-    if audio and audio.get("alternates"):
-        by_voice = {x.voice: (x.timeline or []) for x in (v.alt_audios or [])}
-        for alt in audio["alternates"]:
-            alt["timeline"] = by_voice.get(alt["voice"], [])
     return d
 
 
