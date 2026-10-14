@@ -13,6 +13,9 @@ kokoro==0.7.16
 misaki[en,ja]==0.9.4
 soundfile==0.14.0
 numpy==1.26.4
+# 音频压缩：把 Kokoro 的 24kHz PCM 编成 MP3（体积 ~1/8，且保持 App 兼容的 .mp3）。
+# 纯 Python + 自带 LAME，无系统依赖；CI runner 不保证有 ffmpeg，故不用 ffmpeg。
+lameenc==1.8.4
 #
 # 日文 G2P：misaki 的 JAG2P → cutlet → fugashi.Tagger() 需要 MeCab 词典。
 # misaki[ja] 依赖的是 `unidic` 空壳包（词典要另跑 `python -m unidic download`

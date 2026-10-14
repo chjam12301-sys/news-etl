@@ -445,43 +445,35 @@ def _get_ja_g2p():
     return _JA_G2P
 
 
-def _encode_mp3(pcm: bytes, sample_rate: int = 24000, bitrate: str = "48k") -> bytes | None:
-    """把 16-bit 单声道 PCM 用 ffmpeg 编成 MP3。
+def _encode_mp3(pcm: bytes, sample_rate: int = 24000, bitrate: int = 48) -> bytes | None:
+    """把 16-bit 单声道 PCM 编成 MP3（体积约为 WAV 的 1/8）。
 
-    Kokoro 原生输出是 24kHz float→16bit PCM（即 WAV），体积约为 MP3 的 8~16 倍
-    （一条 2 分钟音频 ~6MB vs ~0.7MB）。这里统一压成 MP3：既大幅降体积，也让
-    `audio.url` 回到 App 早已支持的 `.mp3`（与 edge-tts 时期一致）。
+    Kokoro 原生输出是 24kHz float→int16 PCM（即 WAV），体积约为 MP3 的 8~16 倍
+    （一条 2 分钟音频 ~6MB vs ~0.7MB）。压成 MP3 既大幅降体积，也让 `audio.url`
+    回到 App 早已支持的 `.mp3`（与 edge-tts 时期一致）。
 
-    ffmpeg 在 GitHub ubuntu runner 上预装；缺失或失败则返回 None，由调用方回退 WAV。
+    用纯 Python 的 lameenc（自带 LAME，无系统依赖 —— GitHub runner 上不保证有 ffmpeg）。
+    未安装/lameenc 失败则返回 None，由调用方回退 WAV。
     """
-    import shutil
-    import subprocess
-
-    if shutil.which("ffmpeg") is None:
-        log.warning("[tts] 未找到 ffmpeg，Kokoro 音频将保留 WAV（体积较大）")
+    try:
+        import lameenc
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[tts] 未安装 lameenc，Kokoro 音频将保留 WAV（体积较大）：%s", exc)
         return None
     try:
-        proc = subprocess.run(
-            [
-                "ffmpeg", "-hide_banner", "-loglevel", "error",
-                "-f", "s16le", "-ar", str(sample_rate), "-ac", "1", "-i", "pipe:0",
-                "-codec:a", "libmp3lame", "-b:a", bitrate, "-f", "mp3", "pipe:1",
-            ],
-            input=pcm,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=180,
-        )
+        enc = lameenc.Encoder()
+        enc.set_bit_rate(bitrate)
+        enc.set_in_sample_rate(sample_rate)
+        enc.set_channels(1)
+        enc.set_quality(2)
+        mp3 = enc.encode(pcm) + enc.flush()
     except Exception as exc:  # noqa: BLE001
-        log.warning("[tts] ffmpeg 调用异常，回退 WAV：%s", exc)
+        log.warning("[tts] lameenc 编码异常，回退 WAV：%s", exc)
         return None
-    if proc.returncode != 0 or not proc.stdout:
-        log.warning(
-            "[tts] ffmpeg 非零退出，回退 WAV：%s",
-            proc.stderr.decode("utf-8", "ignore")[:200],
-        )
+    if not mp3:
+        log.warning("[tts] lameenc 返回空，回退 WAV")
         return None
-    return proc.stdout
+    return mp3
 
 
 async def _synth_kokoro(text: str, lang: str) -> TTSResult:
