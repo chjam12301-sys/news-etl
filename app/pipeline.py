@@ -395,6 +395,7 @@ async def run_daily(
                         pub2 = publish_all(db=db, storage=storage, topics_days=3,
                                            commit_msg=f"content: daily {day} article {article.id}: 可选音色")
                         totals["alt_publish_ok"] = bool(pub2.get("ok"))
+                        totals["alt_publish_verify"] = pub2.get("verify")
             if warmup_only:
                 # 仅补可选音色：不抓新闻、不改写、不发布（与 --warmup-only 语义一致）
                 totals["alt_voices"] = await _safe_alt_voices(db, article, with_tts=with_tts)
