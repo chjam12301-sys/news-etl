@@ -417,14 +417,28 @@ def test_pr_release_rejected_but_event_news_kept() -> None:
         assert not score_title(title, "yystv")[2], title
 
 
-def test_pr_release_rejected_but_event_news_kept() -> None:
-    """厂商通稿挡掉，但「某游戏在试玩会亮相」这类真事件要留着。"""
-    _s, _r, rejected = score_title(
-        "BOE（京东方）亮相2026核聚变嘉年华北京站 以创新显示技术力促电竞产业升级", "yystv"
+def test_body_boilerplate_stripped() -> None:
+    """站点模板噪声（致谢 / 署名日期 / 图注 / 裸链接）不能混进改写 prompt。"""
+    html = (
+        '<div id="paragraph">'
+        "<p>感谢IT之家网友 某网友 的线索投递！</p>"
+        "<p>IT之家 10 月 27 日消息，微软旗下《我的世界》明日登陆 Switch 2。</p>"
+        "<p>图｜博客🔗</p>"
+        "<p>https://example.com/only-a-link</p>"
+        "<p>港服定价 235 港币。</p>"
+        "</div>"
     )
-    assert rejected == "厂商通稿"
-    for title in (
-        "《湮灭之潮》亮相核聚变试玩会与「核电波」：格雯面部效果迎来优化",
-        "荣耀WIN2手机评测：手游玩家首选的年度T0电竞夯机",
-    ):
-        assert not score_title(title, "yystv")[2], title
+    body = fetcher._clean(html)
+    assert "线索投递" not in body
+    assert "IT之家 10 月 27 日消息" not in body
+    assert "图｜" not in body
+    assert "only-a-link" not in body
+    # 正文句子必须原样留着
+    assert "微软旗下《我的世界》明日登陆 Switch 2。" in body
+    assert "港服定价 235 港币。" in body
+
+
+def test_body_boilerplate_keeps_normal_sentences() -> None:
+    """清洗不能误伤正文：普通句子里出现「感谢」「图」都得留着。"""
+    html = "<p>他感谢团队的支持，并称这张图表很关键。</p>"
+    assert fetcher._clean(html) == "他感谢团队的支持，并称这张图表很关键。"

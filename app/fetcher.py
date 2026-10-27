@@ -109,7 +109,39 @@ def _clean(html: str) -> str:
     text = soup.get_text("\n")
     text = re.sub(r"[ \t\xa0]+", " ", text)
     text = re.sub(r"\n\s*\n\s*\n+", "\n\n", text)
-    return "\n".join(ln.strip() for ln in text.splitlines() if ln.strip()).strip()
+    joined = "\n".join(ln.strip() for ln in text.splitlines() if ln.strip()).strip()
+    return _strip_boilerplate(joined)
+
+
+# 中文站正文开头的固定噪声。实测 IT之家：
+#   「感谢IT之家网友 肖战割割 的线索投递！ IT之家 10 月 27 日消息，微软 Mojang…」
+# 这些东西会原样进改写 prompt，模型偶尔会把它当成正文的一部分（写出
+# 「Thanks to an IT之家 reader for the tip」这种句子），属于必须洗掉的噪声。
+_BOILERPLATE = (
+    # 线索投递致谢（IT之家 / 快科技这类靠读者报料的站都有）
+    re.compile(r"感谢[^。！!\n]{0,40}?(?:线索投递|投稿|投递)[！!]?"),
+    # 站点署名 + 日期：「IT之家 10 月 27 日消息，」这种开场白
+    re.compile(
+        r"^[ \t　]*(?:IT之家|快科技|爱范儿|钛媒体|少数派|机核|游研社|触乐)"
+        r"[ \t]*\d{1,2}[ \t]*月[ \t]*\d{1,2}[ \t]*日(?:消息|报道|电)?[，,、：:]?[ \t]*",
+        re.M,
+    ),
+)
+
+# 图片说明与孤零零的链接：图｜xxx / 图片来源：xxx / 整行只有一个 URL
+_NOISE_LINE = re.compile(r"^[ \t]*(?:图[ \t]*[｜|丨][ \t]*|图片来源[：:]|题图[：:]|插图[：:])")
+_URL_ONLY = re.compile(r"^[ \t]*https?://\S+[ \t]*$")
+
+
+def _strip_boilerplate(text: str) -> str:
+    """去掉站点模板噪声，只留正文句子。"""
+    if not text:
+        return text
+    for pat in _BOILERPLATE:
+        text = pat.sub("", text)
+    lines = [ln for ln in text.splitlines()
+             if not _NOISE_LINE.match(ln) and not _URL_ONLY.match(ln)]
+    return "\n".join(lines).strip()
 
 
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
