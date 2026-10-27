@@ -442,3 +442,43 @@ def test_body_boilerplate_keeps_normal_sentences() -> None:
     """清洗不能误伤正文：普通句子里出现「感谢」「图」都得留着。"""
     html = "<p>他感谢团队的支持，并称这张图表很关键。</p>"
     assert fetcher._clean(html) == "他感谢团队的支持，并称这张图表很关键。"
+
+
+def test_body_boilerplate_with_inline_tags() -> None:
+    """真实抽取里昵称被 <a> 包着，致谢句会被换行拆散，正则必须跨得过去。"""
+    html = (
+        '<div id="paragraph">'
+        "<p>感谢IT之家网友 <a>某网友</a> 的线索投递！</p>"
+        "<p>IT之家 10 月 27 日消息，微软旗下《我的世界》明日登陆 Switch 2。</p>"
+        "<p>（IT之家注：现汇率约合 200.2 元人民币）</p>"
+        "<p>IT之家附游戏商品页（</p><p>）。</p>"
+        "<p>广告声明：文内含有的对外跳转链接。</p>"
+        "<p>港服定价 235 港币。</p>"
+        "</div>"
+    )
+    body = fetcher._clean(html)
+    assert "线索投递" not in body
+    assert "IT之家 10 月 27 日消息" not in body
+    assert "IT之家注" not in body
+    assert "IT之家附" not in body
+    assert "广告声明" not in body
+    assert "微软旗下《我的世界》明日登陆 Switch 2。" in body
+    assert "港服定价 235 港币。" in body
+
+
+def test_clean_cjk_brief_still_usable() -> None:
+    """洗掉噪声后短讯只剩 200 字上下，不能被「内容过短」误杀。"""
+    brief = "微软旗下《我的世界》将于明日登陆任天堂 Switch 2，港服定价 235 港币。" * 5
+    raw = fetcher.RawArticle(
+        source="ithome",
+        source_url="https://www.ithome.com/1/018/443.htm",
+        topic="tech",
+        title="《我的世界》Switch 2 版本明日发售",
+        summary="",
+        body=brief,
+        image_url=None,
+        published_at=None,
+        fingerprint="x",
+    )
+    assert 180 <= len(brief) < 260
+    assert fetcher._usable(raw) is True

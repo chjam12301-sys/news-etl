@@ -117,20 +117,34 @@ def _clean(html: str) -> str:
 #   「感谢IT之家网友 肖战割割 的线索投递！ IT之家 10 月 27 日消息，微软 Mojang…」
 # 这些东西会原样进改写 prompt，模型偶尔会把它当成正文的一部分（写出
 # 「Thanks to an IT之家 reader for the tip」这种句子），属于必须洗掉的噪声。
+#
+# ⚠️ 这些正则必须容忍换行：`get_text("\n")` 会在每个行内标签之间插换行，真实
+# 抽取结果长这样（`<a>` 包着网友昵称）：
+#   感谢IT之家网友\n肖战割割\n的线索投递！\nIT之家\n10 月 27 日消息，微软…
+# 用 [^。！!] / \s* 跨行匹配，但**排除句末标点**，保证不会跨句吞内容。
 _BOILERPLATE = (
     # 线索投递致谢（IT之家 / 快科技这类靠读者报料的站都有）
-    re.compile(r"感谢[^。！!\n]{0,40}?(?:线索投递|投稿|投递)[！!]?"),
+    re.compile(r"感谢[^。！!]{0,60}?(?:线索投递|投稿|投递)[！!]?"),
     # 站点署名 + 日期：「IT之家 10 月 27 日消息，」这种开场白
     re.compile(
         r"^[ \t　]*(?:IT之家|快科技|爱范儿|钛媒体|少数派|机核|游研社|触乐)"
-        r"[ \t]*\d{1,2}[ \t]*月[ \t]*\d{1,2}[ \t]*日(?:消息|报道|电)?[，,、：:]?[ \t]*",
+        r"\s*\d{1,2}\s*月\s*\d{1,2}\s*日\s*(?:消息|报道|电)?[，,、：:]?\s*",
         re.M,
     ),
 )
 
-# 图片说明与孤零零的链接：图｜xxx / 图片来源：xxx / 整行只有一个 URL
-_NOISE_LINE = re.compile(r"^[ \t]*(?:图[ \t]*[｜|丨][ \t]*|图片来源[：:]|题图[：:]|插图[：:])")
+# 图片说明、站点旁注（「（IT之家注：…）」「IT之家附…」）、广告声明、整行只有一个 URL
+_NOISE_LINE = re.compile(
+    r"^[ \t]*[，,。、；;]*[ \t]*"
+    r"(?:"
+    r"图[ \t]*[｜|丨]|图片来源[：:]|题图[：:]|插图[：:]"
+    r"|广告声明|责任编辑|声明[：:]"
+    r"|[（(]?(?:IT之家|快科技|少数派|机核)[注附]"
+    r")"
+)
 _URL_ONLY = re.compile(r"^[ \t]*https?://\S+[ \t]*$")
+# 被上面拆掉后剩下的孤立标点行（「）。」「，」这种）
+_PUNCT_ONLY = re.compile(r"^[ \t]*[）)。，、：:；;」』】\]]+[ \t]*$")
 
 
 def _strip_boilerplate(text: str) -> str:
@@ -139,8 +153,13 @@ def _strip_boilerplate(text: str) -> str:
         return text
     for pat in _BOILERPLATE:
         text = pat.sub("", text)
-    lines = [ln for ln in text.splitlines()
-             if not _NOISE_LINE.match(ln) and not _URL_ONLY.match(ln)]
+    lines = [
+        ln for ln in text.splitlines()
+        if ln.strip()
+        and not _NOISE_LINE.match(ln)
+        and not _URL_ONLY.match(ln)
+        and not _PUNCT_ONLY.match(ln)
+    ]
     return "\n".join(lines).strip()
 
 
@@ -270,7 +289,7 @@ def _usable(raw: RawArticle) -> bool:
     if not raw.source_url.startswith("https://"):
         log.info("[fetch] 非 https 原文地址，跳过: %s", raw.source_url)
         return False
-    if len(body) < (260 if _is_cjk(body) else 400):
+    if len(body) < (180 if _is_cjk(body) else 400):
         log.info("[fetch] 内容过短，跳过: %s", raw.source_url)
         return False
     return True
@@ -376,8 +395,11 @@ def fetch_full_text(raw: RawArticle, client: httpx.Client) -> str:
         if "html" not in ctype and "xml" not in ctype:
             return raw.body or raw.summary
         text = _extract_body(resp.text)
-        need = 400 if _is_cjk(text) else 600
-        return text if len(text) > need else (raw.body or raw.summary or text)
+        # 门槛跟着 _usable 的下限走：清洗掉站点噪声后，中文短讯的干净正文本来就
+        # 只有 200 字上下（IT之家实测 556 → 235），还按 400 卡就会把它判成
+        # 「抽取出错」而退回 RSS 摘要，等于白洗。
+        need = 180 if _is_cjk(text) else 600
+        return text if len(text) >= need else (raw.body or raw.summary or text)
     log.info("[fetch] 正文抓取失败 %s: %s", raw.source_url, last_exc)
     return raw.body or raw.summary
 
