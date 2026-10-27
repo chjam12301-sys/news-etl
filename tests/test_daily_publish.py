@@ -80,7 +80,7 @@ def test_global_collect_ranks_all_topics_and_falls_back(monkeypatch):
     candidates = [raw(f"Unique report {i}", t) for i, t in enumerate(topics)]
     monkeypatch.setattr(fetcher, "fetch_signals", lambda *a: {})
     monkeypatch.setattr(fetcher, "FEEDS_BY_TOPIC", {t: [i] for i, t in enumerate(topics)})
-    monkeypatch.setattr(fetcher, "fetch_feed", lambda feed, client: [candidates[feed]])
+    monkeypatch.setattr(fetcher, "fetch_feed", lambda feed, client, limit=12: [candidates[feed]])
     from app import selector
     monkeypatch.setattr(selector, "rank", lambda *a: [SimpleNamespace(raw=c) for c in reversed(candidates)])
     seen = []

@@ -61,6 +61,42 @@ def _cjk_tokens(run: str) -> set[str]:
     return {g for g in grams if g not in _CJK_STOP}
 
 
+# --------------------------------------------------------------------------- #
+# 跨主题判重：同一件事被两家媒体各写一遍
+# --------------------------------------------------------------------------- #
+# 实测（2026-10-27）：同一天 ifanr 写「刚刚，GPT-6.1 Terra 骨折价发布，Agent 时代的
+# 打工模型来了」、tmtpost 写「GPT-6.1 Terra发布，评论区：拉完了」，中文措辞差得远，
+# 二元组 Jaccard 撞不上（一个过 0.45 的门槛都没有），但**产品名完全一样**。
+# 拉丁实词（型号/产品名）就是跨主题判重的锚点。
+_LATIN_TOKEN_RE = re.compile(r"[a-z][a-z0-9.+#]{2,}")
+
+# 几乎每篇都会出现的品牌/平台词，当锚点会误杀
+_COMMON_ENTITIES = frozenset(
+    """
+iphone ipad macbook imac ipados ios android apple google pixel samsung galaxy
+xiaomi redmi huawei honor oppo vivo oneplus realme sony nintendo playstation xbox
+steam windows microsoft openai anthropic gemini chatgpt deepseek kimi doubao meta
+amazon netflix nvidia intel amd qualcomm tiktok youtube weibo wechat alipay taobao
+the and for with from that this app pro max plus ultra mini lite new air
+""".split()
+)
+
+
+def entity_signature(title: str) -> set[str]:
+    """标题里的产品 / 型号名（拉丁实词），用作跨主题同事件的判据。"""
+    out: set[str] = set()
+    for tok in _LATIN_TOKEN_RE.findall((title or "").lower()):
+        if tok in _COMMON_ENTITIES or tok in _STOP:
+            continue
+        out.add(tok)
+    return out
+
+
+def same_event(a: set[str], b: set[str], min_shared: int = 2) -> bool:
+    """两个标题是否在讲同一个产品/型号（共享 ≥2 个拉丁实词）。"""
+    return len(a & b) >= min_shared
+
+
 def strip_publisher(title: str, publisher: str = "") -> str:
     """去掉 Google News 标题尾部的 " - Publisher"。
 

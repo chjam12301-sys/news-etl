@@ -36,6 +36,9 @@ SOURCE_WEIGHT: dict[str, float] = {
     # 编辑部型、写得像人话的给 1.0；厂商稿与快讯偏多的稍微压一点。
     "ifanr": 1.0, "ithome": 0.95, "sspai": 1.0, "toodaylab": 1.0,
     "tmtpost": 0.9, "gcores": 1.0, "yystv": 0.95, "chuapp": 0.95,
+    # 2026-10-27 第二批：极客公园编辑部，快科技偏快讯/厂商稿，
+    # 什么值得买带导购与促销色彩（软但偏消费）。
+    "geekpark": 0.95, "mydrivers": 0.9, "mydrivers_ev": 0.9, "smzdm": 0.8,
     # ---- 历史海外源：保留权重避免旧数据重算时口径突变 ----
     # 大众新闻（可读性强、受众广）
     "bbc_world": 1.0, "bbc_tech": 1.0, "bbc_business": 1.0, "bbc_science": 1.0,
@@ -107,6 +110,8 @@ CJK_REJECT_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"(一文读懂|一文看懂|一文了解|一文说清|一图读懂)", "说明文"),
     (r"(如何看待|怎么看待|如何评价|该怎么看|到底是什么|究竟是什么)", "问答体"),
     (r"^(关于|谈谈|说说|聊聊|浅谈)", "随笔"),
+    # 厂商通稿：品牌公关稿的固定腔调（实测：「BOE 亮相… 以创新显示技术力促电竞产业升级」）
+    (r"赋能|助力|共筑|力促|领航|生态共建|战略合作|携手共", "厂商通稿"),
 )
 
 # 强动词（中文）：标题里出现 = 真的发生了某件事
@@ -122,6 +127,10 @@ CJK_VERBS: tuple[str, ...] = (
 # 作品名（《…》）与拉丁品牌/型号：中文标题里最具体的锚点
 _WORK = re.compile(r"《[^》]{1,30}》")
 _LATIN_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9.+]{1,}")
+# 多个分号 = 一条标题里塞了几件事，是「早报/速览」的另一种写法
+# （极客公园的「苹果发 X；触屏 MacBook 或周三发布；《流浪地球3》将曝光」）
+_DIGEST_JOINER = "；"
+_DIGEST_JOINER_MIN = 2
 
 BASE_SCORE = 0.5
 ACCEPT_FLOOR = 0.35       # 低于此分认为不适合做听力材料
@@ -157,6 +166,8 @@ def score_title(title: str, source: str, heat: int = 0) -> tuple[float, list[str
         for pat, why in CJK_REJECT_PATTERNS:
             if re.search(pat, t):
                 return 0.0, [f"出局：{why}"], why
+        if t.count(_DIGEST_JOINER) >= _DIGEST_JOINER_MIN:
+            return 0.0, ["出局：一条标题塞了多件事"], "汇总型栏目"
 
     score = BASE_SCORE
     low = t.lower()

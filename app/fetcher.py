@@ -44,9 +44,18 @@ FEEDS: list[Feed] = [
     # 消费电子 / 科技
     Feed("ifanr", "爱范儿", "tech", "https://www.ifanr.com/feed", lang="zh"),
     Feed("ithome", "IT之家", "tech", "https://www.ithome.com/rss/", lang="zh"),
+    Feed("geekpark", "极客公园", "tech", "https://www.geekpark.net/rss", lang="zh"),
+    Feed("mydrivers", "快科技", "tech", "https://rss.mydrivers.com/rss.aspx?Tid=1", lang="zh"),
+    # 超能网（expreview）已排除：它的 https 握手在本环境直接失败
+    # （UNEXPECTED_EOF_WHILE_READING，curl 能通但 httpx 不通），
+    # 于是所有原文地址只能是 http，全部被 App 端的 https 约束挡掉。
     # 数字生活 / 消费
     Feed("sspai", "少数派", "lifestyle", "https://sspai.com/feed", lang="zh"),
     Feed("toodaylab", "理想生活实验室", "lifestyle", "https://www.toodaylab.com/feed", lang="zh"),
+    # 评测频道（Tid=2）：整篇是产品体验，适合做分级阅读
+    Feed("mydrivers_ev", "快科技·评测", "lifestyle",
+         "https://rss.mydrivers.com/rss.aspx?Tid=2", lang="zh"),
+    Feed("smzdm", "什么值得买", "lifestyle", "https://post.smzdm.com/feed/", lang="zh"),
     # 商业消费（钛媒体偏产品与公司，不是政策财经）
     Feed("tmtpost", "钛媒体", "business", "https://www.tmtpost.com/rss", lang="zh"),
     # 游戏 / 文化
@@ -303,16 +312,16 @@ def fetch_feed(feed: Feed, client: httpx.Client, limit: int = 12) -> list[RawArt
 
 
 def _https_variants(url: str) -> list[str]:
-    """把 http:// 的原地址补一个 https:// 候选。
+    """把 http:// 的原地址换成 https:// 优先试，http 只作兜底。
 
-    理想生活实验室等站的 RSS 里给的是 http 链接，而 App 端 `CdnEntry.key()`
-    对 source_url 有硬约束：必须 https 开头，否则整条目录项解析直接抛异常。
-    所以抓全文时顺手升级并在成功后回写最终地址。
+    理想生活实验室 / 极客公园 / 超能网的 RSS 里给的是 http 链接，而 App 端
+    `CdnEntry.key()` 对 source_url 有硬约束：必须 https 开头，否则整条目录项
+    解析直接抛异常。**顺序很关键**：先试 http 的话，站点 200 返回、不跳转，
+    就永远拿不到 https 地址（实测极客公园就是这样被整站丢掉的）。
     """
-    out = [url]
-    if url.startswith("http://"):
-        out.append("https://" + url[len("http://") :])
-    return out
+    if not url.startswith("http://"):
+        return [url]
+    return ["https://" + url[len("http://") :], url]
 
 
 def fetch_full_text(raw: RawArticle, client: httpx.Client) -> str:
@@ -416,7 +425,7 @@ def collect(
 
     recent_titles 为空时只在当批内去重（CLI 单次调用的场景）。
     """
-    from .dedup import content_tokens
+    from .dedup import content_tokens, entity_signature, same_event
     from .selector import select
 
     topics = topics or settings.topics.split(",")
@@ -434,18 +443,23 @@ def collect(
 
         global_candidates: list[RawArticle] = []
         global_heats: dict[str, int] = {}
+        # 已入选文章的「产品/型号」指纹，用做跨主题同事件判重
+        picked_sigs: list[set[str]] = []
         for topic in topics:
             feeds = FEEDS_BY_TOPIC.get(topic) or []
             sigs = signals.get(topic, [])
 
             candidates: list[RawArticle] = []
+            # 每个源分到多少条：以前是「前两个源各 12 条就凑满 CANDIDATE_CAP」，
+            # 于是第 3 个之后的源根本没被拉过 —— 加新源等于白加。
+            # 现在按源数平分名额，保证每个源都有代表作进候选池。
+            per_feed = max(3, CANDIDATE_CAP // max(len(feeds), 1))
             for feed in feeds:
                 # 够评就行：源越多越慢，而 Actions 一个源卡住要等满 25s。
-                # 20 条候选足以选出 1~3 篇，没必要把 5 个源全拉一遍。
                 if len(candidates) >= CANDIDATE_CAP:
                     break
                 try:
-                    entries = fetch_feed(feed, client)
+                    entries = fetch_feed(feed, client, limit=per_feed)
                 except Exception as exc:  # noqa: BLE001
                     log.warning("[fetch] %s 拉取异常: %s", feed.key, exc)
                     continue
@@ -466,7 +480,9 @@ def collect(
                 global_candidates.extend(candidates)
                 global_heats.update(heats)
                 continue
-            picked, _scored = select(candidates, per_topic, heats)
+            # 多要几条：同事件 / 非 https / 正文太短都会让某条落选，
+            # 只取 per_topic 条的话一被否掉这个主题当天就空了。
+            picked, _scored = select(candidates, per_topic + 3, heats)
 
             got = 0
             for raw in picked:
@@ -477,10 +493,18 @@ def collect(
                 if hit:
                     log.info("[dedup] 二次判重跳过：%s ‖ 已用：%s", raw.title[:60], hit[:60])
                     continue
+                # 跨主题同事件：不同媒体各写一遍同一款产品，中文措辞差很远，
+                # 但产品名一样 —— 按拉丁实词判，避免同一天出两篇 GPT-6.1。
+                sig = entity_signature(raw.title)
+                dup_of = next((s for s in picked_sigs if same_event(sig, s)), None)
+                if dup_of is not None:
+                    log.info("[dedup] 跨主题同事件，跳过：%s", raw.title[:56])
+                    continue
                 raw.body = fetch_full_text(raw, client)
                 if not _usable(raw):
                     continue
                 index.add(raw.title)
+                picked_sigs.append(sig)
                 result.append(raw)
                 got += 1
             log.info("[fetch] 主题 %s 得到 %d 篇（候选 %d）", topic, got, len(candidates))
@@ -496,9 +520,14 @@ def collect(
                 if url in seen_urls or index.find(raw.title):
                     continue
                 seen_urls.add(url)
+                sig = entity_signature(raw.title)
+                if any(same_event(sig, s) for s in picked_sigs):
+                    log.info("[dedup] 同事件，跳过：%s", raw.title[:56])
+                    continue
                 raw.body = fetch_full_text(raw, client)
                 if not _usable(raw):
                     continue
                 index.add(raw.title)
+                picked_sigs.append(sig)
                 result.append(raw)
     return result

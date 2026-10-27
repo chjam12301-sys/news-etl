@@ -274,7 +274,7 @@ cp .env.example .env# 留空也能跑（走离线降级 + 本地存储）
 
 .venv/bin/python scripts/run_full.py --force     # 完整重跑
 .venv/bin/python -m app.cli serve                # 起服务 :8000
-.venv/bin/python -m pytest tests/ -q             # 138 个测试
+.venv/bin/python -m pytest tests/ -q             # 290 个测试
 ```
 
 ⚠️ 本机网络连不上 Openverse（Cloudflare 相关域名被阻断），**配图只能在 Actions 里跑**。

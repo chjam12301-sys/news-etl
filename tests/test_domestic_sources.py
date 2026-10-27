@@ -13,7 +13,7 @@ import feedparser
 
 from app import fetcher
 from app.config import settings
-from app.dedup import content_tokens, is_duplicate
+from app.dedup import content_tokens, entity_signature, is_duplicate, same_event
 from app.editorial import blocked_reason, is_official_url
 from app.selector import score_title
 
@@ -232,8 +232,31 @@ def test_http_source_upgraded_to_https() -> None:
     client = _UpgradeClient(html)
     raw = _raw("http://www.toodaylab.com/84263")
     fetcher.fetch_full_text(raw, client)  # type: ignore[arg-type]
-    assert client.calls[0].startswith("http://")
+    # 必须**先**试 https：先试 http 的话站点直接 200 返回、不跳转，就永远拿不到
+    # https 地址（极客公园、超能网就是这样被整站丢掉的）
+    assert client.calls[0].startswith("https://")
     assert raw.source_url.startswith("https://www.toodaylab.com/84263")
+
+
+class _HttpOnlyClient:
+    """https 不通、只有 http 可用的站点（App 端会拒收，应被丢弃）。"""
+
+    def __init__(self, html: str) -> None:
+        self.html = html
+
+    def get(self, url, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        if url.startswith("https://"):
+            raise RuntimeError("https 不可用")
+        return _UpgradeResp(self.html, url)
+
+
+def test_http_only_source_is_dropped() -> None:
+    html = "<html><body><div class='post-content'>" + "中文正文" * 200 + "</div></body></html>"
+    raw = _raw("http://www.toodaylab.com/84263")
+    fetcher.fetch_full_text(raw, _HttpOnlyClient(html))  # type: ignore[arg-type]
+    # 正文抓到了，但地址还是 http —— App 的 CdnEntry.key() 会抛异常，必须丢
+    assert not raw.source_url.startswith("https://")
+    assert not fetcher._usable(raw)
 
 
 def test_non_https_article_is_dropped() -> None:
@@ -313,3 +336,95 @@ def test_all_feeds_are_chinese_and_non_official() -> None:
         assert feed.lang == "zh", feed.key
         assert feed.topic in settings.topics.split(","), feed.key
         assert not is_official_url(feed.url), feed.key
+
+
+# --------------------------------------------------------------------------- #
+# 九、第二批源（2026-10-27 加源）
+# --------------------------------------------------------------------------- #
+def test_feed_slots_are_shared_by_all_sources(monkeypatch) -> None:
+    """以前是「前两个源各 12 条就凑满 CANDIDATE_CAP」，第 3 个之后的源白加。"""
+    feeds = [
+        fetcher.Feed(f"src{i}", f"源{i}", "tech", f"https://example.com/{i}.xml", lang="zh")
+        for i in range(5)
+    ]
+    seen: list[tuple[str, int]] = []
+
+    def fake_fetch(feed, client, limit=12):  # noqa: ANN001, ANN002, ANN003
+        seen.append((feed.key, limit))
+        return [
+            fetcher.RawArticle(
+                source=feed.key,
+                source_url=f"https://example.com/{feed.key}/1",
+                topic="tech",
+                title=f"{feed.key} 发布新款耳机：售价 599 元",
+                summary="摘要" * 100,
+                body="",
+                image_url=None,
+                published_at=None,
+                fingerprint=feed.key,
+            )
+        ]
+
+    monkeypatch.setattr(fetcher, "FEEDS_BY_TOPIC", {"tech": feeds})
+    monkeypatch.setattr(fetcher, "fetch_feed", fake_fetch)
+    monkeypatch.setattr(fetcher, "fetch_signals", lambda client, topics: {})
+    monkeypatch.setattr(fetcher, "fetch_full_text", lambda raw, client: "正文" * 300)
+    monkeypatch.setattr(fetcher, "_usable", lambda raw: True)
+
+    fetcher.collect(["tech"], per_topic=1)
+    assert [k for k, _ in seen] == [f"src{i}" for i in range(5)]
+    assert {limit for _, limit in seen} == {fetcher.CANDIDATE_CAP // len(feeds)}
+
+
+def test_cross_topic_same_event_detected() -> None:
+    """同一天 ifanr 与 tmtpost 各写一遍 GPT-6.1：中文措辞差很远，产品名一样。"""
+    a = entity_signature("刚刚，GPT-6.1 Terra 骨折价发布，Agent 时代的打工模型来了")
+    b = entity_signature("GPT-6.1 Terra发布，评论区：拉完了")
+    assert same_event(a, b)
+
+    # 一条标题里只共享泛化品牌词（iPhone）不算同一件事
+    c = entity_signature("iPhone Duo 拆解：最好修的折叠 iPhone，就是别撕膜")
+    d = entity_signature("这一波新款 iPhone 已经全面发售，看看配件值得入手哪些")
+    assert not same_event(c, d)
+
+
+def test_multi_item_title_rejected() -> None:
+    """一条标题里用分号塞了三件事 = 汇总，不是单篇选题。"""
+    _score, _reasons, rejected = score_title(
+        "苹果发 iPhone 折叠屏官方文档，排查铰链故障；触屏 MacBook 或周三发布；《流浪地球 3》将曝光",
+        "geekpark",
+    )
+    assert rejected == "汇总型栏目"
+
+
+def test_second_batch_sources_registered() -> None:
+    keys = {f.key for f in fetcher.FEEDS}
+    assert {"geekpark", "mydrivers", "mydrivers_ev", "smzdm"} <= keys
+    # 超能网 https 握手在本环境不通，原文地址只能是 http，已被排除
+    assert "expreview" not in keys
+
+
+def test_pr_release_rejected_but_event_news_kept() -> None:
+    """厂商通稿挡掉，但「某游戏在试玩会亮相」这类真事件要留着。"""
+    _s, _r, rejected = score_title(
+        "BOE（京东方）亮相2026核聚变嘉年华北京站 以创新显示技术力促电竞产业升级", "yystv"
+    )
+    assert rejected == "厂商通稿"
+    for title in (
+        "《湮灭之潮》亮相核聚变试玩会与「核电波」：格雯面部效果迎来优化",
+        "荣耀WIN2手机评测：手游玩家首选的年度T0电竞夯机",
+    ):
+        assert not score_title(title, "yystv")[2], title
+
+
+def test_pr_release_rejected_but_event_news_kept() -> None:
+    """厂商通稿挡掉，但「某游戏在试玩会亮相」这类真事件要留着。"""
+    _s, _r, rejected = score_title(
+        "BOE（京东方）亮相2026核聚变嘉年华北京站 以创新显示技术力促电竞产业升级", "yystv"
+    )
+    assert rejected == "厂商通稿"
+    for title in (
+        "《湮灭之潮》亮相核聚变试玩会与「核电波」：格雯面部效果迎来优化",
+        "荣耀WIN2手机评测：手游玩家首选的年度T0电竞夯机",
+    ):
+        assert not score_title(title, "yystv")[2], title
