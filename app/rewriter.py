@@ -59,6 +59,9 @@ def _user_prompt(topic: str, title: str, source_text: str, spec: LevelSpec) -> s
         "proper nouns or when quoting a source term."
     )
     return f"""SOURCE TOPIC: {topic}
+SOURCE LANGUAGE: the original report is most likely 简体中文 (Chinese). If so, read it,
+understand what happened, then write your own {lang_name} version — never translate
+sentence by sentence, and never keep Chinese phrasing in the output.
 TARGET LANGUAGE: {lang_name}
 ORIGINAL HEADLINE: {title}
 
@@ -78,6 +81,12 @@ LANGUAGE RULES
 {lang_rule}
 Keep all names, numbers, dates and places accurate to the source.
 Simplify the language, never distort the facts.
+No Chinese characters may appear in `title` / `lead` / `paragraphs`. China-based brands
+and products must use their official Latin name — 微信=WeChat, 抖音=Douyin, 小米=Xiaomi,
+米家=Mijia, 华为=Huawei, 荣耀=HONOR, 比亚迪=BYD, 大疆=DJI, 美团=Meituan, 拼多多=Pinduoduo,
+支付宝=Alipay, 淘宝=Taobao, 京东=JD.com, 哔哩哔哩=Bilibili, 小红书=Xiaohongshu (RED),
+蔚来=NIO, 理想=Li Auto, 小鹏=XPeng, 网易=NetEase, 腾讯=Tencent, 阿里巴巴=Alibaba,
+爱奇艺=iQIYI, 微博=Weibo. Anything without an official Latin name: use pinyin.
 
 {HEADLINE_RULES}
 
@@ -98,6 +107,8 @@ ZH REQUIREMENTS
 - `title_zh` / `lead_zh` / `paragraphs_zh` 必须是**简体中文**。
 - 段落数必须与 `paragraphs` 完全一致，一一对应。
 - 翻译要自然、地道，像中文媒体写出来的，不要逐词硬译。
+- 源文本身就是中文时，不要照搬原报道的标题和措辞：按本篇英文内容重写，
+  让译文和上面的英文逐段对得上。
 
 CONSTRAINTS
 - paragraphs: {spec.para_min} to {spec.para_max} items, each {spec.para_words[0]}-{spec.para_words[1]} words.

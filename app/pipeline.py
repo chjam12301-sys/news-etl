@@ -111,26 +111,29 @@ async def _process_article(
 
     prov = (article.image_provider or "").strip().lower()
     needs_image = force or not (article.image_url or "").strip() or prov not in PROVIDER_NAMES
+
+    def _clear_image() -> None:
+        article.image_url = ""
+        article.image_credit = ""
+        article.image_provider = ""
+        article.image_credit_url = ""
+        article.image_source_url = ""
+        article.image_author = ""
+
+    def _apply_image(img) -> None:
+        article.image_url = img.url
+        article.image_credit = img.attribution
+        article.image_provider = img.provider
+        article.image_credit_url = img.creator_url
+        article.image_source_url = img.source_url
+        article.image_author = img.creator
+        log.info("[img] article_id=%s → %s %s", article.id, img.provider, img.url[:70])
+
     if needs_image:
-
-        def _clear_image() -> None:
-            article.image_url = ""
-            article.image_credit = ""
-            article.image_provider = ""
-            article.image_credit_url = ""
-            article.image_source_url = ""
-            article.image_author = ""
-
         try:
             img = await find_image(article.topic, article.title_original)
             if img:
-                article.image_url = img.url
-                article.image_credit = img.attribution
-                article.image_provider = img.provider
-                article.image_credit_url = img.creator_url
-                article.image_source_url = img.source_url
-                article.image_author = img.creator
-                log.info("[img] article_id=%s → %s %s", article.id, img.provider, img.url[:70])
+                _apply_image(img)
             else:
                 # 由 _image_meta 走渐变占位
                 _clear_image()
@@ -150,6 +153,22 @@ async def _process_article(
         article.topic, article.title_original, article.body_original, missing, llm
     ) if missing else []
     log.info("[pipe] 改写完成 %d 个等级，用时 %.1fs", len(results), time.time() - t0)
+
+    # 源文换成中文以后，中文标题里基本抽不出英文检索词（keywords_from_title 只认
+    # 拉丁词），第一次配图大多只能落到渐变占位。改写完已经有英文标题了，用它补配一次。
+    # 仍然以标题实词为准，不引入「technology computer」这类泛词兜底。
+    if needs_image and not (article.image_url or "").strip() and results:
+        en_title = next((r.title for r in results if r.lang == "en" and r.title), "")
+        if en_title:
+            try:
+                img = await find_image(article.topic, en_title)
+                if img:
+                    _apply_image(img)
+                else:
+                    log.info("[img] article_id=%s 英文标题补配仍未命中，保持占位", article.id)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("[img] 英文标题补配失败: %s", exc)
+            db.flush()
 
     for r in results:
         body = r.body

@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 
 from .config import settings
 from .dedup import TopicIndex, build_index
+from .editorial import blocked_reason
 
 log = logging.getLogger(__name__)
 
@@ -30,47 +31,28 @@ class Feed:
     purpose: str = "body"
 
 
-# 正文源：每个主题 4~5 路，互为备份；均为公开 RSS。
-# 排序有讲究：靠前的源会被优先评测，所以把大众新闻编辑部放前面、
-# 学术机构源放后面（配合 selector 的源权重，学术稿基本轮不上）。
+# 正文源：国内市场化媒体，题材是消费电子 / 数字生活 / 游戏文化。
+#
+# 2026-10-27 用户要求「从国外新闻转到国内新闻」，并明确排除严肃新闻与官方新闻
+# （原话：「不要搞那种严肃新闻啊，特别是红色政治新闻，任何官方发的新闻都不要搞」）。
+# 因此这里只保留**非官方、非时政**的中文源；人民网 / 中新网 / 新华 / 央视一类的
+# 官方源虽然 RSS 稳定可用，但**故意不用**。抓取阶段还有 app/editorial.py 做红线过滤。
+#
+# 实测（2026-10-27）：8 个源全部 200 且有条目；China Daily RSS 已全线 404，
+# Sixth Tone 只回 1 条，SCMP 与本机网络不通，均未采用。
 FEEDS: list[Feed] = [
-    # tech
-    Feed("bbc_tech", "BBC Technology", "tech", "https://feeds.bbci.co.uk/news/technology/rss.xml"),
-    Feed("guardian_tech", "The Guardian Tech", "tech", "https://www.theguardian.com/technology/rss"),
-    Feed("theverge", "The Verge", "tech", "https://www.theverge.com/rss/index.xml"),
-    Feed("arstechnica", "Ars Technica", "tech", "https://feeds.arstechnica.com/arstechnica/index"),
-    Feed("hnrss", "Hacker News", "tech", "https://hnrss.org/frontpage"),
-    # business
-    Feed("bbc_business", "BBC Business", "business", "https://feeds.bbci.co.uk/news/business/rss.xml"),
-    Feed("cnbc", "CNBC", "business", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss25&id=10001147"),
-    Feed("guardian_business", "The Guardian Business", "business", "https://www.theguardian.com/business/rss"),
-    Feed("marketwatch", "MarketWatch", "business", "http://feeds.marketwatch.com/marketwatch/topstories/"),
-    Feed("ft", "Financial Times", "business", "https://www.ft.com/rss/home"),
-    # science
-    Feed("bbc_science", "BBC Science", "science", "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml"),
-    Feed("guardian_science", "The Guardian Science", "science", "https://www.theguardian.com/science/rss"),
-    Feed("phys_org", "Phys.org", "science", "https://phys.org/rss-feed/"),
-    Feed("nature", "Nature", "science", "https://www.nature.com/nature.rss"),
-    Feed("quanta", "Quanta Magazine", "science", "https://api.quantamagazine.org/feed/"),
-    # health
-    Feed("bbc_health", "BBC Health", "health", "https://feeds.bbci.co.uk/news/health/rss.xml"),
-    Feed("guardian_science_health", "The Guardian Health", "health", "https://www.theguardian.com/society/health/rss"),
-    Feed("medical_x", "Medical Xpress", "health", "https://medicalxpress.com/rss-feed/"),
-    Feed("who", "WHO", "health", "https://www.who.int/rss-feeds/news-english.xml"),
-    Feed("nih", "NIH", "health", "https://www.nih.gov/rss/News_Health.xml"),
-    # sports
-    Feed("bbc_sport", "BBC Sport", "sports", "http://feeds.bbci.co.uk/sport/rss.xml"),
-    Feed("espn", "ESPN", "sports", "http://www.espn.com/espn/rss/news"),
-    Feed("guardian_sport", "The Guardian Sport", "sports", "https://www.theguardian.com/sport/rss"),
-    Feed("skysports", "Sky Sports", "sports", "https://www.skysports.com/rss/12040"),
-    # culture
-    Feed("bbc_culture", "BBC Culture", "culture", "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml"),
-    Feed("guardian_culture", "The Guardian Arts", "culture", "https://www.theguardian.com/uk/arts/rss"),
-    Feed("npr_books", "NPR Books", "culture", "https://feeds.npr.org/1007/rss.xml"),
-    # world
-    Feed("bbc_world", "BBC World", "world", "https://feeds.bbci.co.uk/news/world/rss.xml"),
-    Feed("guardian_world", "The Guardian World", "world", "https://www.theguardian.com/world/rss"),
-    Feed("aljazeera", "Al Jazeera", "world", "https://www.aljazeera.com/xml/rss/all.xml"),
+    # 消费电子 / 科技
+    Feed("ifanr", "爱范儿", "tech", "https://www.ifanr.com/feed", lang="zh"),
+    Feed("ithome", "IT之家", "tech", "https://www.ithome.com/rss/", lang="zh"),
+    # 数字生活 / 消费
+    Feed("sspai", "少数派", "lifestyle", "https://sspai.com/feed", lang="zh"),
+    Feed("toodaylab", "理想生活实验室", "lifestyle", "https://www.toodaylab.com/feed", lang="zh"),
+    # 商业消费（钛媒体偏产品与公司，不是政策财经）
+    Feed("tmtpost", "钛媒体", "business", "https://www.tmtpost.com/rss", lang="zh"),
+    # 游戏 / 文化
+    Feed("gcores", "机核", "culture", "https://www.gcores.com/rss", lang="zh"),
+    Feed("yystv", "游研社", "culture", "https://www.yystv.cn/rss/feed", lang="zh"),
+    Feed("chuapp", "触乐", "culture", "https://www.chuapp.com/feed", lang="zh"),
 ]
 
 FEEDS_BY_TOPIC: dict[str, list[Feed]] = {}
@@ -80,17 +62,17 @@ for _f in FEEDS:
 
 # Google News 只当热度信号：它的 <link> 是 news.google.com/rss/articles/CBMi…
 # 跳转壳，跟随重定向拿到的是 Google 自己的 JS 页面（实测 593KB，无正文），
-# 解 base64 也只得到不透明 token。所以只取标题，用来判断"这条有多少外媒在报"。
+# 解 base64 也只得到不透明 token。所以只取标题，用来判断"这条有多少家媒体在报"。
+#
+# 源换成中文媒体后，热度信号同步换 zh-CN 版；故意不用 NATION（国内）栏目 ——
+# 那个栏目基本是时政通稿，和 editorial.py 的红线冲突。取不到就 heat=0，
+# 打分段会自然降级，不影响出稿。
 SIGNAL_FEEDS: dict[str, str] = {
     "tech": "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY",
     "business": "https://news.google.com/rss/headlines/section/topic/BUSINESS",
-    "science": "https://news.google.com/rss/headlines/section/topic/SCIENCE",
-    "health": "https://news.google.com/rss/headlines/section/topic/HEALTH",
-    "sports": "https://news.google.com/rss/headlines/section/topic/SPORTS",
     "culture": "https://news.google.com/rss/headlines/section/topic/ENTERTAINMENT",
-    "world": "https://news.google.com/rss/headlines/section/topic/WORLD",
 }
-_SIGNAL_SUFFIX = "&hl=en-US&gl=US&ceid=US:en"
+_SIGNAL_SUFFIX = "&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
 
 # 每个主题最多评测多少条候选（够选出 1~3 篇即可，源越多越慢）
 CANDIDATE_CAP = 20
@@ -121,22 +103,52 @@ def _clean(html: str) -> str:
     return "\n".join(ln.strip() for ln in text.splitlines() if ln.strip()).strip()
 
 
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _is_cjk(text: str) -> bool:
+    """粗判一段文本是不是中文。中文一个字符承载的信息约为英文的 1.7 倍，
+    所以字数门槛要按语言分开设，否则中文稿会被「太短」误杀。"""
+    sample = (text or "")[:2000]
+    if not sample:
+        return False
+    return len(_CJK_RE.findall(sample)) / len(sample) >= 0.15
+
+
 def _extract_body(html: str) -> str:
-    """从文章 HTML 抽正文：优先 article/main/[itemprop=articleBody]。"""
+    """从文章 HTML 抽正文：优先语义容器，再退到各站的主内容 class。
+
+    中文站的容器多数没有 article / itemProp 语义，靠 class 名区分：
+    IT之家 #paragraph、理想生活实验室 .post-content、游研社 .doc-content、
+    机核 .newsPage。
+    """
     soup = BeautifulSoup(html or "", "lxml")
     node = None
     for sel in (
         "article [itemprop='articleBody']",
         "[itemprop='articleBody']",
+        "#js_content",           # 微信公众号转载
+        "#articleContent",
+        "#artibody",
+        "#paragraph",            # IT之家
+        ".article-content",
+        ".article-body",
+        ".post-content",         # 理想生活实验室
+        ".single-content",
+        ".doc-content",          # 游研社
+        ".post_content",
+        ".entry-content",
+        ".rich_media_content",
+        ".newsPage",             # 机核
         "article",
         "main article",
         "main",
-        ".article-body",
-        ".story-body",
     ):
         node = soup.select_one(sel)
-        if node and len(node.get_text(strip=True)) > 400:
-            break
+        if node is not None:
+            text = node.get_text(strip=True)
+            if len(text) > (320 if _is_cjk(text) else 400):
+                break
         node = None
     if node is None:
         body = soup.select_one("body")
@@ -201,6 +213,51 @@ class RawArticle:
     heat: int = 0
 
 
+def _usable(raw: RawArticle) -> bool:
+    """全文抓回后复核一次：正文是否通稿、长度是否够写一篇分级稿。
+
+    摘要干净、正文是通稿的情况真实存在（转载稿常见），所以红线和长度两道检查
+    都放在拿到全文之后再做一次。
+    """
+    body = raw.body or raw.summary or ""
+    why = blocked_reason(title=raw.title, body=body, url=raw.source_url)
+    if why:
+        log.info("[editorial] 丢弃（正文复核 %s）：%s", why, raw.title[:48])
+        return False
+    # App 端 CdnEntry.key() 要求 source_url 必须是 https，否则整条目录项解析抛异常。
+    # 升级失败就宁可当天少一篇，也不能把一条会炸客户端的数据发出去。
+    if not raw.source_url.startswith("https://"):
+        log.info("[fetch] 非 https 原文地址，跳过: %s", raw.source_url)
+        return False
+    if len(body) < (260 if _is_cjk(body) else 400):
+        log.info("[fetch] 内容过短，跳过: %s", raw.source_url)
+        return False
+    return True
+
+
+_CONTENT_BLOCK = re.compile(r"<content:encoded>.*?</content:encoded>", re.S)
+
+
+def _prepare_feed_xml(text: str, limit: int) -> str:
+    """解析前先把 XML 瘦身，否则 feedparser 会慢到离谱。
+
+    实测（2026-10-27，国内源）：feedparser 对超长 content:encoded（内联数据 URI
+    图片）是超线性变慢的 —— ifanr 的 314KB feed 要 36.7s，IT之家 245KB 要 19.9s。
+    一轮 4 个主题能白烧好几分钟，而这些 HTML 我们本来也不用（正文单独抓页面）。
+    删掉 content:encoded + 只留前 limit+4 条后：ifanr 0.4s、IT之家 0.9s。
+    """
+    text = _CONTENT_BLOCK.sub("", text or "")
+    is_atom = "</entry>" in text
+    pattern = r"</entry>" if is_atom else r"</item>"
+    end_tag = "</feed>" if is_atom else "</channel></rss>"
+    kept = 0
+    for m in re.finditer(pattern, text):
+        kept += 1
+        if kept >= limit + 4:
+            return text[: m.end()] + end_tag
+    return text
+
+
 def fetch_feed(feed: Feed, client: httpx.Client, limit: int = 12) -> list[RawArticle]:
     """抓一个 RSS 源，返回原始文章列表。"""
     try:
@@ -210,7 +267,7 @@ def fetch_feed(feed: Feed, client: httpx.Client, limit: int = 12) -> list[RawArt
         log.warning("[fetch] %s 失败: %s", feed.key, exc)
         return []
 
-    parsed = feedparser.parse(resp.text)
+    parsed = feedparser.parse(_prepare_feed_xml(resp.text, limit))
     if not parsed.entries:
         log.warning("[fetch] %s 无条目", feed.key)
         return []
@@ -223,6 +280,12 @@ def fetch_feed(feed: Feed, client: httpx.Client, limit: int = 12) -> list[RawArt
             continue
         summary = _clean(entry.get("summary", "") or entry.get("description", ""))
         body = _clean(entry.get("content", [{}])[0].get("value", "")) if entry.get("content") else ""
+        # 红线过滤放在这里：官方稿 / 时政稿连候选都不进，不占候选名额，
+        # 也就不会在「全部出局」的兜底分支里被捞回来。
+        why = blocked_reason(title=title, body=f"{summary}\n{body}", url=link)
+        if why:
+            log.info("[editorial] 丢弃 %s（%s）：%s", feed.key, why, title[:48])
+            continue
         out.append(
             RawArticle(
                 source=feed.key,
@@ -239,21 +302,43 @@ def fetch_feed(feed: Feed, client: httpx.Client, limit: int = 12) -> list[RawArt
     return out
 
 
+def _https_variants(url: str) -> list[str]:
+    """把 http:// 的原地址补一个 https:// 候选。
+
+    理想生活实验室等站的 RSS 里给的是 http 链接，而 App 端 `CdnEntry.key()`
+    对 source_url 有硬约束：必须 https 开头，否则整条目录项解析直接抛异常。
+    所以抓全文时顺手升级并在成功后回写最终地址。
+    """
+    out = [url]
+    if url.startswith("http://"):
+        out.append("https://" + url[len("http://") :])
+    return out
+
+
 def fetch_full_text(raw: RawArticle, client: httpx.Client) -> str:
     """抓原文正文；失败时回退到 RSS 摘要。"""
-    try:
-        resp = client.get(
-            raw.source_url, headers={"User-Agent": settings.user_agent}, follow_redirects=True
-        )
-        resp.raise_for_status()
+    last_exc: Exception | None = None
+    for url in _https_variants(raw.source_url):
+        try:
+            resp = client.get(
+                url, headers={"User-Agent": settings.user_agent}, follow_redirects=True
+            )
+            resp.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            continue
+        # 回写最终地址：跟随重定向后的 URL 才是权威的，且必须是 https
+        final = str(resp.url)
+        if final.startswith("https://"):
+            raw.source_url = final
         ctype = resp.headers.get("content-type", "")
         if "html" not in ctype and "xml" not in ctype:
             return raw.body or raw.summary
         text = _extract_body(resp.text)
-        return text if len(text) > 600 else (raw.body or raw.summary or text)
-    except Exception as exc:  # noqa: BLE001
-        log.info("[fetch] 正文抓取失败 %s: %s", raw.source_url, exc)
-        return raw.body or raw.summary
+        need = 400 if _is_cjk(text) else 600
+        return text if len(text) > need else (raw.body or raw.summary or text)
+    log.info("[fetch] 正文抓取失败 %s: %s", raw.source_url, last_exc)
+    return raw.body or raw.summary
 
 
 @dataclass(slots=True)
@@ -287,7 +372,7 @@ def fetch_signals(client: httpx.Client, topics: list[str]) -> dict[str, list[Sig
         except Exception as exc:  # noqa: BLE001
             log.info("[signal] %s 不可用(%s)，本轮跳过热度评分", topic, exc)
             continue
-        parsed = feedparser.parse(resp.text)
+        parsed = feedparser.parse(_prepare_feed_xml(resp.text, 40))
         items: list[SignalItem] = []
         for entry in parsed.entries[:40]:
             title = (entry.get("title") or "").strip()
@@ -393,8 +478,7 @@ def collect(
                     log.info("[dedup] 二次判重跳过：%s ‖ 已用：%s", raw.title[:60], hit[:60])
                     continue
                 raw.body = fetch_full_text(raw, client)
-                if len(raw.body or raw.summary) < 400:
-                    log.info("[fetch] 内容过短，跳过: %s", raw.source_url)
+                if not _usable(raw):
                     continue
                 index.add(raw.title)
                 result.append(raw)
@@ -413,7 +497,7 @@ def collect(
                     continue
                 seen_urls.add(url)
                 raw.body = fetch_full_text(raw, client)
-                if len(raw.body or raw.summary) < 400:
+                if not _usable(raw):
                     continue
                 index.add(raw.title)
                 result.append(raw)

@@ -6,10 +6,13 @@
 这些其实不是翻译问题，是**选题问题**：Nature / Phys.org / Quanta / NIH / WHO
 这类机构源写的是科研流程，不是新闻。解决办法是两层：
 
-1. 源权重 —— BBC、卫报、CNBC、ESPN 这类大众新闻编辑部 1.0；学术机构 0.35。
-   光靠这条就能让 science / health 落在大众媒体写的新闻上。
-2. 标题打分 —— 有具体的人/公司 + 强动词 + 数字 = 好选题；
-   "How X are made" / "study" / "paper" / "needs fair rules" = 扣到出局。
+1. 源权重 —— 编辑部型大众媒体 1.0；机构/学术源 0.35。
+2. 标题打分 —— 有具体的人/公司/作品 + 强动词 + 数字 = 好选题；
+   "How X are made" / "study" / "paper" / 「一文读懂」= 扣到出局。
+
+2026-10-27 源换成国内媒体后，上面两条判据不变，但正则不能只用英文：
+中文标题命中不了英文强动词与专有名词正则，打分信号会整体失效，
+所以中文单列一组 CJK_VERBS / CJK_REJECT_PATTERNS。
 
 另加 Google News 热度：一条新闻被越多家媒体同时报道，越可能是当天的大事。
 """
@@ -29,6 +32,11 @@ log = logging.getLogger(__name__)
 # 源权重：大众新闻编辑部 vs 学术/机构源
 # --------------------------------------------------------------------------- #
 SOURCE_WEIGHT: dict[str, float] = {
+    # ---- 国内源（2026-10-27 起）：消费电子 / 数字生活 / 游戏文化 ----
+    # 编辑部型、写得像人话的给 1.0；厂商稿与快讯偏多的稍微压一点。
+    "ifanr": 1.0, "ithome": 0.95, "sspai": 1.0, "toodaylab": 1.0,
+    "tmtpost": 0.9, "gcores": 1.0, "yystv": 0.95, "chuapp": 0.95,
+    # ---- 历史海外源：保留权重避免旧数据重算时口径突变 ----
     # 大众新闻（可读性强、受众广）
     "bbc_world": 1.0, "bbc_tech": 1.0, "bbc_business": 1.0, "bbc_science": 1.0,
     "bbc_health": 1.0, "bbc_culture": 1.0, "bbc_sport": 1.0,
@@ -85,6 +93,36 @@ retires retired signs signed announces announced shuts shuts_down stops stopped 
 _PROPER_NOUN = re.compile(r"\b[A-Z][a-z]{2,}\b")
 _NUMBER = re.compile(r"\b\d[\d,.]*\s*(%|percent|million|billion|trillion|kg|km|m)?\b")
 
+# --------------------------------------------------------------------------- #
+# 中文标题规则（源换成国内媒体后新增）
+# --------------------------------------------------------------------------- #
+# 英语那套强动词 / 专有名词正则在中文标题上一条都命中不了，等于把打分信号全废掉，
+# 所以中文单列一组。判据不变：**具体的人/产品/数字 + 发生了什么**才算好选题。
+_CJK = re.compile(r"[一-鿿]")
+
+# 直接出局：多条目汇总（早报/资讯/盘点）当单篇写会散架，说明文与问答体没有事件
+CJK_REJECT_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"早报|晚报|晨报|周报|日报|资讯|速递|简报|快报|盘[点货]|汇总|合集|速览", "汇总型栏目"),
+    (r"(本周|上周|本月|一周|年度)(行业)?(大事|要闻|新闻|回顾)", "汇总型栏目"),
+    (r"(一文读懂|一文看懂|一文了解|一文说清|一图读懂)", "说明文"),
+    (r"(如何看待|怎么看待|如何评价|该怎么看|到底是什么|究竟是什么)", "问答体"),
+    (r"^(关于|谈谈|说说|聊聊|浅谈)", "随笔"),
+)
+
+# 强动词（中文）：标题里出现 = 真的发生了某件事
+CJK_VERBS: tuple[str, ...] = (
+    "发布", "开售", "首销", "发售", "上线", "下线", "下架", "停服", "关停", "开源",
+    "裁员", "扩招", "涨价", "降价", "提价", "召回", "延期", "跳票", "停产", "断货",
+    "收购", "并购", "融资", "上市", "退市", "起诉", "胜诉", "败诉", "罚款", "和解",
+    "封禁", "解禁", "重制", "复刻", "联名", "签约", "夺冠", "破亿", "爆火", "刷屏",
+    "翻车", "泄露", "回应", "道歉", "辟谣", "推出", "亮相", "开卖", "预售", "复出",
+    "停更", "开馆", "开展", "撤档", "定档", "重映", "通关",
+)
+
+# 作品名（《…》）与拉丁品牌/型号：中文标题里最具体的锚点
+_WORK = re.compile(r"《[^》]{1,30}》")
+_LATIN_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9.+]{1,}")
+
 BASE_SCORE = 0.5
 ACCEPT_FLOOR = 0.35       # 低于此分认为不适合做听力材料
 HEAT_BONUS = 0.05         # 每有 1 家外媒同报 +0.05，最多 +0.3
@@ -115,6 +153,11 @@ def score_title(title: str, source: str, heat: int = 0) -> tuple[float, list[str
         if re.search(pat, t, re.I):
             return 0.0, [f"出局：{why}"], why
 
+    if _CJK.search(t):
+        for pat, why in CJK_REJECT_PATTERNS:
+            if re.search(pat, t):
+                return 0.0, [f"出局：{why}"], why
+
     score = BASE_SCORE
     low = t.lower()
 
@@ -134,6 +177,18 @@ def score_title(title: str, source: str, heat: int = 0) -> tuple[float, list[str
     if _PROPER_NOUN.search(body):
         score += 0.12
         reasons.append("有具体人名/地名 +0.12")
+
+    if _CJK.search(t):
+        verb = next((v for v in CJK_VERBS if v in t), "")
+        if verb:
+            score += 0.15
+            reasons.append(f"有强动词「{verb}」+0.15")
+        if _WORK.search(t):
+            score += 0.12
+            reasons.append("有具体作品名 +0.12")
+        elif _LATIN_TOKEN.search(t):
+            score += 0.10
+            reasons.append("有品牌/型号名 +0.10")
 
     if _NUMBER.search(t):
         score += 0.10

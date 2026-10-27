@@ -56,11 +56,12 @@ WIKIMEDIA_API = "https://commons.wikimedia.org/w/api.php"
 # 主题 → 英文检索词（各图库主要索引英文标签，用英文命中率更高）
 TOPIC_QUERIES: dict[str, list[str]] = {
     "tech": ["technology computer", "circuit board", "software code", "robot"],
+    "lifestyle": ["desk setup", "gadget flatlay", "home interior", "coffee shop"],
     "business": ["office business", "city skyline", "team meeting", "finance"],
     "science": ["laboratory research", "microscope science", "nature research", "experiment"],
     "health": ["medical health", "hospital care", "wellness exercise", "nutrition"],
     "sports": ["sports action", "athletics stadium", "running race", "team sport"],
-    "culture": ["art museum", "music concert", "theatre performance", "architecture"],
+    "culture": ["video game controller", "art museum", "music concert", "architecture"],
     "world": ["city street", "people travel", "world map", "landscape nature"],
 }
 

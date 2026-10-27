@@ -113,7 +113,10 @@ class Settings(BaseSettings):
     image_allow_source_fallback: bool = False
 
     # ---- 抓取 ----------------------------------------------------------
-    topics: str = "tech,business,science,health,sports,culture,world"
+    # 2026-10-27 起只做国内非官方软题材（消费电子 / 数字生活 / 商业消费 / 游戏文化）。
+    # world / science / health / sports 已下线：没有可用的非官方中文源，
+    # 而官方源（人民网 / 中新网 / 新华）按用户要求一律不碰。
+    topics: str = "tech,lifestyle,business,culture"
     articles_per_topic: int = 1
     request_timeout: float = 25.0
     # 选题去重回看天数：库里最近这些天用过的标题不再复用。

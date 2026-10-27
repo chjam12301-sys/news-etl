@@ -111,7 +111,7 @@ gh workflow run daily.yml -f topics=tech,science,world -f per_topic=1
 
 | 参数 | 说明 |
 |---|---|
-| `topics` | 逗号分隔，留空用全部 7 个主题 |
+| `topics` | 逗号分隔，留空用全部 4 个主题（tech / lifestyle / business / culture） |
 | `per_topic` | 每主题几篇（默认 1） |
 | `force` | 强制重建（默认 true） |
 | `reset` | **清空数据库后重跑** —— RSS 去重导致抓不到新文章时用 |

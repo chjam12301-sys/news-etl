@@ -37,6 +37,28 @@ update live latest top best big small amid wins win
 _PUB_SUFFIX = re.compile(r"\s+[|\-–—]\s+(?P<pub>[^|\-–—]{2,40})\s*$")
 # 非字母数字（含中日文保留）
 _SPLIT = re.compile(r"[^0-9a-z一-鿿぀-ヿ]+")
+_CJK = re.compile(r"[一-鿿぀-ヿ]")
+
+# 中文按二元组切分：整句当一个 token 会撞不上任何东西（原来就是这样，中文标题
+# 去重等于没做），单字区分度又太低。二元组是免费的近似分词。
+# 这批高频二元组在中文消费 / 科技新闻里几乎每条都出现，留着会让任意两篇"相似"。
+_CJK_STOP = frozenset(
+    """
+我们 他们 你们 自己 什么 怎么 可以 已经 因为 所以 但是 如果 不是 这个 那个
+这些 那些 现在 今天 昨天 明天 今年 去年 明年 同时 以及 还有 进行 表示 认为
+记者 报道 消息 发布 宣布 目前 相关 方面 问题 情况 工作 时候 没有 就是 这么
+那么 一直 非常 其实 可能 需要 应该 大家 用户 产品 公司 中国 美国 全球 世界
+一个 之后 之前 通过 如何 是否 这样 那样 只是 还是 或者 而且 不过 另外 由于
+""".split()
+)
+
+
+def _cjk_tokens(run: str) -> set[str]:
+    """一段连续中文 → 二元组集合。"""
+    if len(run) < 2:
+        return set()
+    grams = {run[i : i + 2] for i in range(len(run) - 1)}
+    return {g for g in grams if g not in _CJK_STOP}
 
 
 def strip_publisher(title: str, publisher: str = "") -> str:
@@ -63,10 +85,13 @@ def strip_publisher(title: str, publisher: str = "") -> str:
 def content_tokens(
     title: str, *, publisher_suffix: bool = False, publisher: str = ""
 ) -> set[str]:
-    """标题 → 实词集合（小写、去停用词、去标点）。"""
+    """标题 → 实词集合（小写、去停用词、去标点；中文切二元组）。"""
     t = strip_publisher(title, publisher) if publisher_suffix else (title or "")
     out: set[str] = set()
     for tok in _SPLIT.split(t.lower()):
+        if _CJK.search(tok):
+            out |= _cjk_tokens(tok)
+            continue
         if len(tok) < 3 or tok in _STOP:
             continue
         out.add(tok)

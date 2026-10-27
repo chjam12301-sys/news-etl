@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       topics:
-        description: '主题（逗号分隔，留空=全部 7 个）'
+        description: '主题（逗号分隔 tech,lifestyle,business,culture；留空=全部 4 个）'
         required: false
       force:
         description: '仅补当天目标缺失译文；不新增文章'
