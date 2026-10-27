@@ -243,6 +243,61 @@ def test_non_https_article_is_dropped() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 八、CDN 产物里不允许出现源文（中文原文只留在库里做审计）
+# --------------------------------------------------------------------------- #
+def test_version_detail_carries_no_source_text() -> None:
+    """2026-10-27 发现：详情 JSON 一直公开带 body_original，App 从未读过。
+    源换成中文媒体后，这等于把国内新闻全文挂到公开 CDN 上。"""
+    import datetime as dt
+    import json
+
+    from app import exporter
+    from app.db import Article, ArticleVersion
+
+    article = Article(
+        id=1,
+        source="ifanr",
+        source_url="https://www.ifanr.com/1686003",
+        topic="tech",
+        title_original="小米米家高速吹风机 Mini 开售",
+        summary_original="小米米家高速吹风机 Mini 开售，首销 199.7 元。",
+        body_original="中文原文正文，这一段不该出现在 CDN 上。" * 20,
+        published_date=dt.date(2026, 10, 27),
+        published_at=dt.datetime(2026, 10, 27, tzinfo=dt.timezone.utc),
+        fingerprint="a" * 40,
+        rewrite_status="done",
+        tts_status="done",
+    )
+    version = ArticleVersion(
+        id=1,
+        article_id=1,
+        level_code="en_a1",
+        lang="en",
+        level=1,
+        level_label="A1 入门",
+        title="Xiaomi puts a fast hair dryer on sale",
+        body="Xiaomi put a fast hair dryer on sale.",
+        paragraphs=["Xiaomi put a fast hair dryer on sale."],
+        word_count=8,
+        reading_minutes=0.1,
+        vocab=[],
+        lead="",
+        title_zh="小米开卖高速吹风机",
+        lead_zh="",
+        paragraphs_zh=["小米开卖高速吹风机。"],
+    )
+
+    payload = exporter._version_detail(version, article, "")
+    for key in ("title_original", "summary_original", "body_original"):
+        assert key not in payload, key
+    dumped = json.dumps(payload, ensure_ascii=False)
+    assert "小米米家高速吹风机 Mini 开售，首销" not in dumped
+    # 改写产物本身当然要留着
+    assert payload["title"].startswith("Xiaomi")
+    assert payload["title_zh"] == "小米开卖高速吹风机"
+
+
+# --------------------------------------------------------------------------- #
 # 七、源与主题口径
 # --------------------------------------------------------------------------- #
 def test_default_topics_are_domestic_soft_only() -> None:

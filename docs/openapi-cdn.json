@@ -409,12 +409,6 @@
                     }
                   }
                 }
-              },
-              "title_original": {
-                "type": "string"
-              },
-              "body_original": {
-                "type": "string"
               }
             }
           }

@@ -200,9 +200,10 @@ def _version_detail(v: ArticleVersion, a: Article, base: str, rev: str = "") -> 
             # App 端高亮必须用这个字段，不能直接用 body。
             "text": normalize_for_tts(v.body),
             "vocab": v.vocab or [],
-            "title_original": a.title_original,
-            "summary_original": a.summary_original,
-            "body_original": a.body_original,
+            # 注意：这里**不能**再带 title_original / summary_original / body_original。
+            # 2026-10-27 源换成中文媒体后发现，这三个字段一直随详情 JSON 公开到 CDN，
+            # 而 App 侧从头到尾没读过它们 —— 等于把抓来的原文全文（现在是中文报道）
+            # 挂在了公开地址上。原文留在库里做审计用即可。
             "fetched_at": a.fetched_at.isoformat() if a.fetched_at else None,
             "timeline": (v.audio.timeline if is_playable_audio(v.audio) else []) or [],
             "created_at": v.created_at.isoformat() if v.created_at else None,
@@ -265,7 +266,6 @@ def export_day(db: Session, date: dt.date, *, rev: str = "", export_details: boo
                 "source_url": a.source_url,
                 "topic": a.topic,
                 "image_url": a.image_url,
-                "title_original": a.title_original,
                 "published_date": a.published_date.isoformat(),
                 "published_at": a.published_at.isoformat() if a.published_at else None,
             }

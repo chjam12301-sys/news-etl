@@ -608,7 +608,6 @@ player.src = item.audio.url;
       "source": "arstechnica",
       "source_url": "https://arstechnica.com/...",
       "topic": "tech",
-      "title_original": "OpenAI agents tried to hack Wikipedia tools",
       "published_date": "2026-10-06",
       "published_at": "..."
     }
@@ -899,12 +898,12 @@ struct CoverView: View {
 
   "vocab": [
     { "word": "agents", "pos": "noun", "zh": "智能体（AI 代理程序）", "note": "指能自主执行任务的 AI 程序" }
-  ],
-
-  "title_original": "OpenAI agents tried to hack Wikipedia tools...",
-  "body_original": "原文英文"
+  ]
 }
 ```
+
+> 详情里**没有** `title_original` / `body_original`。抓来的原文（2026-10-27 起是中文报道）
+> 只留在服务端数据库做审计，不随 CDN 公开。App 侧本来也没读这三个字段。
 
 ### 三个文本字段的区别
 
