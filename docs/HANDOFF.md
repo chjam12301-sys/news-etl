@@ -14,6 +14,8 @@
 GitHub Actions（北京时间每天 05:30）
   抓 12 个国内中文 RSS（爱范儿/IT之家/极客公园/快科技×2/少数派/理想生活实验室/
   什么值得买/钛媒体/机核/游研社/触乐）
+  主题按星期轮换（周一 tech → 周二 lifestyle → 周三 business → 周四 culture），
+  当天主题挑不出稿才顺延；**一天只发一篇**
   + Google News 中文热度 → 红线过滤 + 去重/选题打分 → DeepSeek 改写 10 等级（含中译）
   → edge-tts 本地配音+时间轴 → Openverse 抓 CC0 配图
         ↓

@@ -461,6 +461,43 @@ def _heat_of(tokens: set[str], signals: list[SignalItem]) -> int:
     return sum(1 for s in signals if len(tokens & s.tokens) >= 2)
 
 
+def topic_order_for_day(day: dt.date, topics: list[str] | None = None) -> list[str]:
+    """当天先抓哪个主题：按星期轮换，其余主题依次补位。
+
+    为什么需要轮换：daily 一天只发一篇，`total_limit=1` 时是**全局按分数取最高**。
+    国内源里 tech 的稿件量与「事件性」都远高于 business / culture（business 只有
+    1 个源），不轮换的话每天都会是 tech，等于把另外三个主题下线。实测：
+    4 个主题一起抓、取前 4 名，全是 tech。
+    """
+    ordered = [t.strip() for t in (topics or settings.topics.split(",")) if t.strip()]
+    if not ordered:
+        return []
+    start = day.weekday() % len(ordered)   # 周一=第一个主题
+    return ordered[start:] + ordered[:start]
+
+
+def collect_by_rotation(
+    day: dt.date,
+    topics: list[str] | None = None,
+    per_topic: int | None = None,
+    recent_titles: list[str] | None = None,
+) -> list[RawArticle]:
+    """按轮换顺序逐个主题试，拿到第一篇就停。
+
+    只有当天的首选主题一篇都挑不出（全重复 / 源挂了 / 全被红线挡掉）时，
+    才顺延到下一个主题 —— 保证「不空发」，但正常情况下主题由轮换决定，
+    不由分数决定。
+    """
+    order = topic_order_for_day(day, topics)
+    for topic in order:
+        raws = collect([topic], per_topic, recent_titles, total_limit=1)
+        if raws:
+            log.info("[fetch] 今日主题轮换命中：%s", topic)
+            return raws
+        log.info("[fetch] 主题 %s 是当天首选但无可用稿件，顺延下一个", topic)
+    return []
+
+
 def collect(
     topics: list[str] | None = None,
     per_topic: int | None = None,

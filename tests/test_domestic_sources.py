@@ -482,3 +482,43 @@ def test_clean_cjk_brief_still_usable() -> None:
     )
     assert 180 <= len(brief) < 260
     assert fetcher._usable(raw) is True
+
+
+def test_topic_rotation_follows_weekday() -> None:
+    """一天只发一篇时，主题由星期决定，不由分数决定。"""
+    import datetime as dt
+
+    from app.fetcher import topic_order_for_day
+
+    topics = ["tech", "lifestyle", "business", "culture"]
+    monday = dt.date(2026, 10, 26)
+    assert monday.weekday() == 0
+    picked = [topic_order_for_day(monday + dt.timedelta(days=i), topics)[0]
+              for i in range(7)]
+    # 一周内四个主题都要出现，且 tech 不能垄断
+    assert set(picked) == set(topics)
+    assert picked.count("tech") <= 2
+    # 首选之后的顺延顺序：把当天主题挪到最前，其余保持原序
+    assert topic_order_for_day(monday + dt.timedelta(days=2), topics) == [
+        "business", "culture", "tech", "lifestyle",
+    ]
+
+
+def test_collect_by_rotation_falls_back_when_topic_empty(monkeypatch) -> None:
+    """当天首选主题挑不出稿子时顺延下一个，保证不空发。"""
+    import datetime as dt
+
+    from app import fetcher
+
+    calls: list[str] = []
+
+    def fake_collect(topics=None, per_topic=None, recent_titles=None, total_limit=None):
+        calls.append(topics[0])
+        return ["ok"] if topics[0] == "lifestyle" else []
+
+    monkeypatch.setattr(fetcher, "collect", fake_collect)
+    out = fetcher.collect_by_rotation(
+        dt.date(2026, 10, 26), ["tech", "lifestyle", "business", "culture"], 1, []
+    )
+    assert out == ["ok"]
+    assert calls == ["tech", "lifestyle"]   # 周一先 tech，tech 空 → 顺延 lifestyle

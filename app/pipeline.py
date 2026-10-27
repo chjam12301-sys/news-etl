@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .config import settings
 from .db import Article, ArticleVersion, AudioAsset, JobRun, SessionLocal, init_db
-from .fetcher import RawArticle, collect
+from .fetcher import RawArticle, collect, collect_by_rotation
 from .levels import ALL_LEVELS
 from .rewriter import get_llm, rewrite_all
 from .audio_store import (
@@ -480,7 +480,7 @@ async def run_daily(
                     if article is None:
                         recent = _recent_titles(db, getattr(settings, "dedup_lookback_days", 60))
                         db.rollback()
-                        raws = await asyncio.to_thread(collect, topics, per_topic, recent, total_limit=1)
+                        raws = await asyncio.to_thread(collect_by_rotation, day, topics, per_topic, recent)
                         totals["fetched"] = len(raws)
                     article, created = _reserve_target(db, day, raws)
                     totals["created"] = int(created)
