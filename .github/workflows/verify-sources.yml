@@ -1,0 +1,51 @@
+name: 源表与改写验收
+
+# 换源 / 改红线 / 改 prompt 之后手动跑一次。
+# 只抓取 + 改写，不写数据库、不上传、不发布，线上内容不受影响。
+# （日常的 daily 一天只产一篇，当天已有文章时还会完全跳过抓取，
+#   所以换源后不能靠 daily 验证。）
+on:
+  workflow_dispatch:
+    inputs:
+      topics:
+        description: '主题（逗号分隔；留空=settings 全部）'
+        required: false
+        default: 'tech,lifestyle'
+      count:
+        description: '入选几篇（全局排名前 N）'
+        required: false
+        default: '3'
+      levels:
+        description: '要验证的等级（逗号分隔）'
+        required: false
+        default: 'en_a1,en_b1,en_c1,ja_n5'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 抓取 + 改写验收
+        env:
+          LLM_PROVIDER: deepseek
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_BASE_URL: https://api.deepseek.com/v1
+          DEEPSEEK_MODEL: deepseek-chat
+          # 不碰数据库 / 对象存储：本脚本理论上不需要，显式置空以防被默认值带跑
+          TTS_ENABLED: 'false'
+          IMAGE_FETCH_ENABLED: 'false'
+          EXPORT_JSON: 'false'
+        run: |
+          python -m scripts.verify_sources \
+            --topics "${{ inputs.topics }}" \
+            --count "${{ inputs.count }}" \
+            --levels "${{ inputs.levels }}"
