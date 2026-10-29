@@ -16,6 +16,17 @@
 |---|---|---|
 | `dist/dict/shards/<前两字母>.json` | 上传 R2 `dict/en/<前两字母>.json` | 运行时查询接口（Worker 读它） |
 | `data/dict/ecdict-subset.json` | 提交进仓库 | ECDICT 子集快照，R2 分片的内容来源（App 运行时查词用，不在生成端烘焙） |
+| （上传后生成） | 上传 R2 `dict/manifest.json` | 这一份词典的版本指纹，见下面「客户端契约」 |
+
+## 客户端契约（2026-10-29）
+
+App 侧词条数据也是「终身一次下载、永远本地复用」：分片落盘后不再请求。
+因此**重建词典不能靠原地覆盖宣告生效** —— 客户端根本不会回来再取。规则：
+
+1. 每次上传都会重写 `dict/manifest.json`，其中 `version` 是全部分片内容的 sha256 前 16 位；
+   同样的数据重跑，`version` 不变（幂等，不会误伤客户端）。
+2. 客户端启动时比对本地记录的 `version`：一致就继续用本地分片，不一致才丢弃本地副本重下。
+3. 旧分片对象**不删**：换版期间老客户端仍能按旧路径取到可用数据。
 
 **为什么按前两个字母分片，而不是一词一对象**：两万词 = 两万次 PUT（+
 HEAD 预检就是四万次）。实测在 GitHub runner 上跑 30 分钟才传到字母 a，
@@ -46,6 +57,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import datetime as dt
 import hashlib
 import json
 import logging
@@ -476,7 +488,44 @@ def upload(shard_dir: Path, workers: int) -> int:
     log.info("上传完成：成功 %d，失败 %d，用时 %.0fs", ok, len(failures), time.time() - t0)
     for line in failures[:10]:
         log.warning("  ✗ %s", line)
+    write_manifest(store, files, ok)
     return ok
+
+
+def write_manifest(store, files: list[Path], uploaded: int) -> None:
+    """写 `dict/manifest.json`：这一份词典的内容指纹。
+
+    **为什么需要**：App 从 2026-10-29 起把分片永久存在本地（`dict-v1/`），
+    下载过一次就再也不会重新取。而分片路径固定是 `dict/en/<两字母>.json`，
+    重建词典等于原地覆盖同一个 key —— 老用户会永远停在旧词条上，且无迹可循。
+    manifest 回答"这一份词典是哪一版"，客户端按 `version` 决定是否丢弃本地副本；
+    在客户端接入之前，它至少让 CI 日志能看出内容到底变没变。
+
+    **位置必须避开 `dict/en/`**：`prune_legacy()` 会把该前缀下名字不是恰好
+    两个字母的对象当早期"一词一对象"的残留删掉。
+    """
+    digest = hashlib.sha256()
+    for p in files:
+        digest.update(p.name.encode("utf-8"))
+        digest.update(p.read_bytes())
+    version = digest.hexdigest()[:16]
+    payload = {
+        "service": "dict",
+        "lang": "en",
+        "version": version,
+        "shards": len(files),
+        "uploaded": uploaded,
+        "built_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "prefix": "dict/en/",
+        "contract": "客户端本地分片副本以 version 为准；version 变化才允许丢弃本地副本重新下载。",
+    }
+    key = "dict/manifest.json"
+    try:
+        store.put(key, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                  content_type="application/json")
+        log.info("词典版本 %s（%d 个分片）已写入 %s", version, len(files), key)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("写 %s 失败：%s", key, exc)
 
 
 def prune_legacy(store) -> int:

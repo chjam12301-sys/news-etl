@@ -349,15 +349,23 @@ def verify_published(
 
     return res
 
-def publish_all(*, db, storage, topics_days: int = 3, commit_msg: str = "content") -> dict[str, Any]:
+def publish_all(*, db, storage, topics_days: int | None = None, commit_msg: str = "content") -> dict[str, Any]:
     """完整发布：① 提交内容 → ② 生成索引 → ③ 校验 → ④ 更新指针。
 
     只有第 ④ 步在校验通过后才执行；失败则保留上一份可用索引，
     App 继续用旧数据（不会出现首页有卡片、详情打不开）。
+
+    `topics_days` 缺省取 `exporter.MAX_DAYS_IN_INDEX`：索引列几天，就必须
+    重新导出并校验几天，否则索引会指向本次没被写过的目录（旧值 3 就是漏掉
+    历史日期的来源，见 exporter 里那个常量的说明）。
     """
-    from .exporter import export_day, export_index, index_key
+    from .config import settings
+    from .exporter import MAX_DAYS_IN_INDEX, export_day, export_index, index_key
     from sqlalchemy import select
     from app.db import Article
+
+    if topics_days is None:
+        topics_days = MAX_DAYS_IN_INDEX
 
     st = storage
     result: dict[str, Any] = {"ok": False}
@@ -367,7 +375,9 @@ def publish_all(*, db, storage, topics_days: int = 3, commit_msg: str = "content
     if size_before > JSDELIVR_LIMIT_MB * 0.8:
         log.warning("[publish] content 体积 %.1fMB 接近 jsDelivr 上限 %dMB，先清理",
                     size_before, JSDELIVR_LIMIT_MB)
-        pruned = st.prune(keep_days=3)      # 超期内容清掉
+        # 清理天数必须与索引窗口一致：按 3 天清、却按 14 天列索引，等于给 App
+        # 发 11 个必然 404 的日期（校验也会当场失败）。
+        pruned = st.prune(keep_days=max(1, int(settings.github_keep_days or 3)))
         size_after = repo_size_mb(st.repo_dir)
         log.info("[publish] 清理后 %.1fMB（删除 %d 个文件）",
                  size_after, pruned["deleted"])

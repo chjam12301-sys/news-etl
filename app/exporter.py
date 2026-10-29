@@ -35,7 +35,22 @@ from .storage import (
 
 log = logging.getLogger("exporter")
 
-MAX_DAYS_IN_INDEX = 60
+# 索引里列出的历史日期数（同时决定每次发布重新导出 / 全量校验几天的目录）。
+#
+# 2026-10-29：原来有效值是 3（`publish_all(topics_days=3)` 写死）。后果是**已经
+# 发布出去的历史日期根本进不了索引** —— 仓库里 `content/data/` 已有 15 天，
+# App 只看得见 3 天，「加载更多」也翻不到更早的。客户端从这天起改为「终身一次
+# 下载、旧文章保留首版」，回看会变多，索引却把能力卡在 3 天，与需求相反。
+#
+# 上限不是随便取的，而是 `settings.github_keep_days`（当前 14）：超期日目录会被
+# `storage.prune()` 从仓库删掉，索引若继续列出它，App 翻到那天就是 404、发布校验
+# 也会判失败。所以这里取值必须 ≤ 保留期，`export_index()` 里另有 clamp 兜底。
+#
+# 想要更长历史（一年可回看）不能只调大这两个数：content/ 的 JSON 每天约 110KB，
+# 一年就是 40MB，会顶到 jsDelivr 单仓库 50MB 的硬上限（音频当初就是因此搬去 R2）。
+# 那需要把 JSON 也迁到对象存储，并同步改客户端的 base_url —— 属于基建+产品决定，
+# 不在本次"一次下载"范围内。
+MAX_DAYS_IN_INDEX = 14
 
 # App 经 latest.json 实际拉取的短路径。必须与 data/index.json 保持一致，
 # 否则 App 读到的是历史版本（曾出现短路径停在 @0605a4d 的情况）。
@@ -296,7 +311,16 @@ def export_index(db: Session, days: int = MAX_DAYS_IN_INDEX, rev: str = "") -> s
 
     `rev` 用于指定生成链接所用的 commit —— 必须在详情与音频**已提交**
     之后调用，否则链接会指向不包含这些文件的旧 commit（曾导致详情 404）。
+
+    `days` 会被 `settings.github_keep_days`（仓库保留期）截断：索引里出现
+    一份已被 prune 掉的日目录，等于给 App 发一个必然 404 的地址。
     """
+    keep = int(getattr(settings, "github_keep_days", 0) or 0)
+    if keep > 0 and int(days) > keep:
+        log.warning("[export] 索引天数 %d 超过仓库保留期 %d，按保留期截断", int(days), keep)
+        days = keep
+    days = max(1, int(days))
+
     st = get_storage()
     base, rev = _cdn_base_with_rev(
         st, (settings.public_base_url or "").rstrip("/"), rev

@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from scripts.build_dict import (
@@ -19,6 +21,7 @@ from scripts.build_dict import (
     parse_csv,
     shard_of,
     split_tag,
+    write_manifest,
 )
 
 
@@ -141,3 +144,58 @@ def test_every_shard_name_is_two_chars():
     """Worker 靠「文件名恰好两字符」来区分 shard 与早期的一词一对象布局。"""
     for w in ("a", "about", "zzz", "don't", "état", "3d"):
         assert len(shard_of(w)) == 2
+
+
+# --------------------------------------------------------------------------- #
+# 词典版本 manifest（2026-10-29：App 分片改为永久本地，靠它判断要不要换版）
+# --------------------------------------------------------------------------- #
+class _FakeStore:
+    def __init__(self):
+        self.objects: dict[str, bytes] = {}
+
+    def put(self, key, data, *, content_type=None):  # noqa: ANN001
+        self.objects[key] = data
+        return None
+
+
+def _write_shards(tmp_path, **contents):
+    for name, text in contents.items():
+        (tmp_path / f"{name}.json").write_text(text, encoding="utf-8")
+    return sorted(tmp_path.glob("*.json"))
+
+
+def test_manifest_version_is_stable_for_same_content(tmp_path):
+    """同样的数据重跑，版本不能变 —— 否则每次重建都会让所有客户端无谓重下分片。"""
+    files = _write_shards(tmp_path, ab='{"abandon":1}', cd='{"cable":2}')
+    store = _FakeStore()
+    write_manifest(store, files, len(files))
+    first = json.loads(store.objects["dict/manifest.json"])
+    assert first["version"]
+    assert first["shards"] == 2
+    assert first["prefix"] == "dict/en/"
+
+    write_manifest(store, files, len(files))
+    assert json.loads(store.objects["dict/manifest.json"])["version"] == first["version"]
+
+
+def test_manifest_version_changes_when_a_shard_changes(tmp_path):
+    """内容变了版本必须变，否则老客户端会永远停在旧词条上。"""
+    store = _FakeStore()
+    files = _write_shards(tmp_path, ab='{"abandon":1}')
+    write_manifest(store, files, 1)
+    before = json.loads(store.objects["dict/manifest.json"])["version"]
+
+    (tmp_path / "ab.json").write_text('{"abandon":2}', encoding="utf-8")
+    write_manifest(store, _write_shards(tmp_path), 1)
+    assert json.loads(store.objects["dict/manifest.json"])["version"] != before
+
+
+def test_manifest_avoids_the_prefix_prune_legacy_deletes(tmp_path):
+    """`prune_legacy()` 会删掉 `dict/en/` 下名字不是恰好两个字母的对象。
+
+    manifest 一旦落进那个前缀，下一轮构建就会把它当旧布局清掉，
+    客户端拿不到版本号又会退回"原地覆盖看不见"的老问题。
+    """
+    store = _FakeStore()
+    write_manifest(store, _write_shards(tmp_path, ab="{}"), 1)
+    assert set(store.objects) == {"dict/manifest.json"}

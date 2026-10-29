@@ -418,7 +418,7 @@ def _republish_for_alt(db: Session, label: str, days: int = 3) -> dict[str, Any]
     storage = get_storage()
     if getattr(storage, "provider", "") != "github":
         return {"ok": True, "verify": "非 github 存储，跳过发布"}
-    pub = publish_all(db=db, storage=storage, topics_days=span, commit_msg=f"content: {label}")
+    pub = publish_all(db=db, storage=storage, commit_msg=f"content: {label}")
     if not pub.get("ok"):
         raise RuntimeError(f"{label}: 发布失败 {pub.get('verify') or pub.get('reason') or ''}")
     return pub
@@ -502,7 +502,7 @@ async def run_daily(
                     storage = get_storage()
                     if getattr(storage, "provider", "") == "github":
                         from .publish import publish_all
-                        pub = publish_all(db=db, storage=storage, topics_days=3,
+                        pub = publish_all(db=db, storage=storage,
                                           commit_msg=f"content: daily {day} article {article.id}")
                         totals.update(publish_ok=bool(pub.get("ok")),
                                       publish_verify=pub.get("verify"), index_rev=pub.get("index_rev", ""))

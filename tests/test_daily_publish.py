@@ -256,7 +256,12 @@ async def test_backfill_window_drives_export_and_publish_days(sessions, monkeypa
     result = await pipeline.run_daily(warmup_days=5, day_override=day)
     assert result["status"] == "success"
     assert export_days == [5]
-    assert pub.call_args.kwargs["topics_days"] == 5
+    # 2026-10-29 起：发布不再按回填窗口缩短索引 —— 索引天数由
+    # exporter.MAX_DAYS_IN_INDEX（=仓库保留期）统一决定，回填只要 ≤ 它，
+    # 就会被这次发布覆盖到。这里守住"回填内容真的被发布"这个原始意图。
+    from app.exporter import MAX_DAYS_IN_INDEX
+    assert MAX_DAYS_IN_INDEX >= 5
+    assert pub.call_args.kwargs.get("topics_days") is None
 
 
 @pytest.mark.asyncio
@@ -735,3 +740,23 @@ async def test_audio_failure_stops_daily_before_export(sessions, monkeypatch, le
         failed = db.get(ArticleVersion, failed_id)
         assert (failed.audio.engine == "silent-fallback") if legacy_silent else failed.audio is None
         assert db.get(ArticleVersion, good_id).audio.engine == "edge-tts"
+
+
+def test_size_gate_prunes_with_repository_retention(monkeypatch, tmp_path):
+    """体积闸门清理的天数必须等于仓库保留期（也就是索引窗口）。
+
+    按 3 天清理、却按 14 天列索引，等于给 App 发 11 个必然 404 的日期，
+    发布校验也会当场失败。这是一条纯一致性约束，用假存储钉住调用参数。
+    """
+    from app import publish
+    from app.config import settings
+
+    prune = Mock(return_value={"deleted": 0})
+    storage = SimpleNamespace(provider="github", repo_dir=str(tmp_path), prune=prune)
+    # 第一次读体积触发闸门，清理后仍超上限 → 走 size_exceeded 提前返回，
+    # 这样不必构造真实 DB 与导出链就能钉住 prune 的参数
+    sizes = iter([publish.JSDELIVR_LIMIT_MB, publish.JSDELIVR_LIMIT_MB * 2])
+    monkeypatch.setattr(publish, "repo_size_mb", lambda _: next(sizes))
+    result = publish.publish_all(db=None, storage=storage)
+    prune.assert_called_once_with(keep_days=settings.github_keep_days)
+    assert result["ok"] is False and result["reason"] == "size_exceeded"
