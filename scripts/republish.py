@@ -98,6 +98,24 @@ def repair_release_date(db, fetched_day: dt.date, target_day: dt.date, expected_
     return changes
 
 
+def _close_quietly(db) -> None:
+    """关闭会话，吞掉「连接已经没了」的错误。
+
+    本脚本在发布阶段要跑几分钟（导出 14 天 + 三次 commit + 全量校验），期间
+    DB 连接一直挂着。Neon 会把空闲会话踢掉，回到这里 close() 触发 ROLLBACK
+    时服务端已断开，psycopg 抛 `received 2 results from command 'ROLLBACK'`
+    —— 发布其实已经成功，却把整个 job 标成失败（2026-10-29 真实发生，
+    索引已是 14 天、latest 指针已更新，CI 却是红的）。
+
+    收尾失败不该否掉发布结果，所以只提示、不抛。
+    """
+    try:
+        db.close()
+    except Exception as exc:  # noqa: BLE001
+        print(f"（DB 会话收尾失败，不影响发布结果：{type(exc).__name__}: {exc}）",
+              file=sys.stderr)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="重新发布并校验索引")
     ap.add_argument("--dry", action="store_true", help="只校验现状，不改动")
@@ -202,7 +220,7 @@ def main() -> int:
         if sample:
             print(f"   示例 v{sample['version_id']}: {sample['detail_url']}")
 
-    db.close()
+    _close_quietly(db)
     return 0 if ok else 1
 
 

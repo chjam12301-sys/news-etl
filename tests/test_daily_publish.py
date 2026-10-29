@@ -778,3 +778,30 @@ def test_republish_default_days_follows_index_window():
     assert len(calls) == 1
     default = next(k.value for k in calls[0].keywords if k.arg == "default")
     assert isinstance(default, ast.Constant) and default.value is None
+
+
+def test_republish_tolerates_dead_db_session_on_teardown():
+    """收尾时 DB 会话已断，不能把一次成功的发布否掉。
+
+    2026-10-29 真实发生：索引已按 14 天发布、latest 指针已更新，最后
+    `db.close()` 触发 ROLLBACK 时 Neon 已把空闲会话踢掉，psycopg 抛
+    `received 2 results from command 'ROLLBACK'`，整个 job 标红。
+    """
+    import ast
+
+    tree = ast.parse(Path("scripts/republish.py").read_text(encoding="utf-8"))
+    node = next(n for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name == "_close_quietly")
+    scope: dict = {"sys": __import__("sys")}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), "republish", "exec"), scope)
+    close_quietly = scope["_close_quietly"]
+
+    class DeadSession:
+        def close(self):
+            raise RuntimeError("received 2 results from command 'ROLLBACK'")
+
+    close_quietly(DeadSession())  # 不抛即通过
+
+    closed = []
+    close_quietly(SimpleNamespace(close=lambda: closed.append(True)))
+    assert closed == [True]
