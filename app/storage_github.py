@@ -375,7 +375,12 @@ class GitHubStorage:
         for f in sorted(self.content_root.rglob("*"), key=lambda x: len(x.parts), reverse=True):
             if not f.is_file():
                 continue
-            if f.name == "index.json" and f.parent == self.content_root:
+            # 根目录的目录类文件不是"某一天的内容"，永远不按日期清：
+            # index.json 是首屏入口，archive.json 是「加载更多」的唯一入口。
+            # 它们今天恰好没有顶层 date 字段（所以 _pub_date 返回空、不会被删），
+            # 但这属于巧合 —— 哪天给 archive 加个 date 字段就会被静默清掉。
+            if f.parent == self.content_root and f.name in ("index.json", "archive.json",
+                                                            "latest.json"):
                 continue
 
             # 先按体积上限删最旧的，直到降到上限内

@@ -193,6 +193,54 @@ class TestOrderMatters:
         assert not verify_published(repo_dir=str(repo), rev=rev1, index=stale).ok
 
 
+class TestArchiveCoversIndex:
+    """「加载更多」清单必须覆盖索引承诺的每一天。
+
+    清单短了失败是**静默**的：客户端只会认为「没有更早的了」，用户翻到一半
+    就断，没有任何报错。所以在更新 latest 指针之前要拦下来。
+    """
+
+    def _commit(self, repo: Path, archive: dict | None) -> str:
+        if archive is not None:
+            (repo / "content" / "data" / "archive.json").write_text(
+                json.dumps(archive), encoding="utf-8")
+        (repo / "content" / "data" / "README.md").write_text("x")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "archive")
+        return _git(repo, "rev-parse", "HEAD")
+
+    def test_no_gap_when_archive_lists_every_indexed_date(self, repo: Path):
+        from types import SimpleNamespace
+
+        from app.publish import _archive_gap
+
+        rev = self._commit(repo, {"dates": ["2026-10-09", "2026-10-08"]})
+        st = SimpleNamespace(repo_dir=str(repo))
+        index = {"dates": ["2026-10-09", "2026-10-08"]}
+        assert _archive_gap(st, rev, index) == []
+
+    def test_reports_dates_missing_from_archive(self, repo: Path):
+        from types import SimpleNamespace
+
+        from app.publish import _archive_gap
+
+        rev = self._commit(repo, {"dates": ["2026-10-09"]})
+        st = SimpleNamespace(repo_dir=str(repo))
+        index = {"dates": ["2026-10-09", "2026-10-08", "2026-10-07"]}
+        assert _archive_gap(st, rev, index) == ["2026-10-07", "2026-10-08"]
+
+    def test_missing_archive_file_counts_as_full_gap(self, repo: Path):
+        from types import SimpleNamespace
+
+        from app.publish import _archive_gap
+
+        rev = self._commit(repo, None)
+        st = SimpleNamespace(repo_dir=str(repo))
+        assert _archive_gap(st, rev, {"dates": ["2026-10-09"]}) == ["2026-10-09"]
+        # 索引本来就没有日期（空库），不该报缺口
+        assert _archive_gap(st, rev, {"dates": []}) == []
+
+
 class TestLatestPointerUpdatedLast:
     def test_commit_does_not_touch_latest(self, repo: Path):
         """commit() 本身不应更新 latest —— 由publish_all 在校验后统一做。"""

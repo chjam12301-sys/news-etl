@@ -237,7 +237,7 @@ class TestIndexShortPath:
         from pathlib import Path as P
 
         src = (P(__file__).parent.parent / "app" / "exporter.py").read_text(encoding="utf-8")
-        body = src.split("def export_index")[1].split("def _all_levels")[0]
+        body = src.split("def export_index")[1].split("def export_archive")[0]
         assert "INDEX_SHORT_KEY" in body
         assert body.count("st.put(") == 2, "data/index.json 与 index.json 都要写"
 
@@ -256,7 +256,7 @@ class TestIndexShortPath:
         from pathlib import Path as P
 
         src = (P(__file__).parent.parent / "app" / "exporter.py").read_text(encoding="utf-8")
-        body = src.split("def export_index")[1].split("def _all_levels")[0]
+        body = src.split("def export_index")[1].split("def export_archive")[0]
         assert "INDEX_SHORT_KEY" in body
         assert body.count("st.put(") == 2, "data/index.json 与 index.json 都要写"
 

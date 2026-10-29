@@ -805,3 +805,129 @@ def test_republish_tolerates_dead_db_session_on_teardown():
     closed = []
     close_quietly(SimpleNamespace(close=lambda: closed.append(True)))
     assert closed == [True]
+
+
+def _local_storage(monkeypatch, tmp_path):
+    from app import exporter
+    from app.storage import LocalStorage
+
+    storage = LocalStorage(tmp_path / "content")
+    storage.repo_dir = str(tmp_path)
+    storage.commit = lambda message: None
+    monkeypatch.setattr(exporter, "get_storage", lambda: storage)
+    monkeypatch.setattr(exporter.settings, "public_base_url", "")
+    return storage
+
+
+def test_export_archive_is_a_separate_history_list_for_load_more(sessions, monkeypatch, tmp_path):
+    """「加载更多」用独立的历史清单，不再靠 index.dates 兼职。
+
+    清单只回答「还有哪些日期」：按日期降序、带 newest/oldest/count、
+    不含任何正文字段（正文仍是点进去才下载）。
+    """
+    storage = _local_storage(monkeypatch, tmp_path)
+    from app.exporter import ARCHIVE_KEY, ARCHIVE_SHORT_KEY, export_archive, export_day
+
+    with sessions() as db:
+        for day in (9, 10, 11):
+            add_article(db, dt.date(2026, 10, day), f"Archive story {day}")
+            export_day(db, dt.date(2026, 10, day))
+        export_archive(db)
+
+    doc = json.loads(storage.read(ARCHIVE_KEY))
+    assert doc["dates"] == ["2026-10-11", "2026-10-10", "2026-10-09"]
+    assert (doc["newest"], doc["oldest"], doc["count"]) == ("2026-10-11", "2026-10-09", 3)
+    # 短路径与 data/ 下那份必须一致（App 经 latest.json 读的是短路径）
+    assert storage.read(ARCHIVE_SHORT_KEY) == storage.read(ARCHIVE_KEY)
+    # 不含首屏内容：它不该变成第二份 index.json
+    assert "latest" not in doc and "versions" not in doc
+
+
+def test_export_archive_never_lists_dates_beyond_retention(sessions, monkeypatch, tmp_path):
+    """清单里列一天已被 prune 掉的日期，等于给 App 一个必然 404 的地址。"""
+    storage = _local_storage(monkeypatch, tmp_path)
+    from app.exporter import ARCHIVE_KEY, export_archive, export_day, settings as exporter_settings
+
+    monkeypatch.setattr(exporter_settings, "github_keep_days", 5)
+    with sessions() as db:
+        for day in range(1, 21):
+            add_article(db, dt.date(2026, 9, day), f"Retention story {day}")
+            export_day(db, dt.date(2026, 9, day))
+        export_archive(db, days=30)
+
+    doc = json.loads(storage.read(ARCHIVE_KEY))
+    assert len(doc["dates"]) == 5
+    assert doc["retention_days"] == 5
+    # 20 天内容只要最新 5 天，最旧那条是 09-16（不是 09-20）
+    assert (doc["newest"], doc["oldest"]) == ("2026-09-20", "2026-09-16")
+
+
+def test_export_archive_drops_dates_without_a_day_directory(sessions, monkeypatch, tmp_path):
+    """库里有一天、但日目录没导出成功时，不能把它写进清单。
+
+    否则「加载更多」会给出一个 404 的游标，而且客户端会认为这一天存在、
+    反复重试。宁可少列，也不要列出打不开的日期。
+    """
+    storage = _local_storage(monkeypatch, tmp_path)
+    from app.exporter import ARCHIVE_KEY, export_archive, export_day
+
+    with sessions() as db:
+        add_article(db, dt.date(2026, 10, 9), "Has a day index")
+        export_day(db, dt.date(2026, 10, 9))
+        # 这一天只在库里，日目录从未落盘（模拟导出/提交失败）
+        add_article(db, dt.date(2026, 10, 10), "Missing its day index")
+        export_archive(db)
+
+    doc = json.loads(storage.read(ARCHIVE_KEY))
+    assert doc["dates"] == ["2026-10-09"]
+    assert doc["count"] == 1
+
+
+def test_publish_writes_archive_in_the_same_run(sessions, monkeypatch, tmp_path):
+    """清单与索引必须同一次发布发出，且清单要覆盖索引承诺的每一天。
+
+    「覆盖」而不是「相等」：等客户端改读 archive 之后，index.dates 会缩回
+    3 天，而 archive 仍列整个保留期 —— 那是目标状态，不该被测试挡住。
+    """
+    storage = _local_storage(monkeypatch, tmp_path)
+    from app.exporter import ARCHIVE_KEY
+    from app.storage import index_key
+    from app import publish
+
+    with sessions() as db:
+        for day in (27, 28, 29):
+            add_article(db, dt.date(2026, 10, day), f"Together story {day}")
+        result = publish.publish_all(db=db, storage=storage)
+        assert result["ok"]
+
+    index = json.loads(storage.read(index_key()))
+    archive = json.loads(storage.read(ARCHIVE_KEY))
+    assert archive["dates"], "清单不能为空"
+    assert set(index["dates"]) <= set(archive["dates"])
+    assert archive["dates"] == sorted(archive["dates"], reverse=True)
+
+
+def test_prune_keeps_root_catalog_files(tmp_path):
+    """prune 按日期清内容，但根目录的目录类文件不属于「某一天」。
+
+    `archive.json` 今天只是靠「没有顶层 date 字段」侥幸活下来的：一旦有人给
+    它加个 date，prune 就会把「加载更多」的整份清单清掉，而且没有任何报错。
+    这里故意给它加一个顶层 date，确认它仍然不会被按日期清走。
+    """
+    from app.storage_github import GitHubStorage
+
+    root = tmp_path / "repo"
+    content = root / "content"
+    old_day = content / "data" / "2020-01-01"
+    old_day.mkdir(parents=True)
+    (old_day / "index.json").write_text(json.dumps({"date": "2020-01-01"}), encoding="utf-8")
+    (content / "index.json").write_text(json.dumps({"dates": []}), encoding="utf-8")
+    (content / "archive.json").write_text(
+        json.dumps({"date": "2020-01-01", "dates": []}), encoding="utf-8")
+
+    GitHubStorage("o/r", local_dir=str(root)).prune(keep_days=7)
+
+    assert (content / "index.json").is_file()
+    assert (content / "archive.json").is_file()
+    # 对照：真正的历史日目录该被清掉，否则这条测试什么都没证明
+    assert not (old_day / "index.json").exists()

@@ -125,6 +125,28 @@ def _read_in_commit(repo_dir: str, rev: str, rel: str) -> bytes | None:
     return p.stdout if p.returncode == 0 else None
 
 
+def _archive_gap(st, rev: str, index: dict) -> list[str]:
+    """索引承诺的日期里，历史清单没列出来的那些；为空表示一致。
+
+    清单是「加载更多」的唯一入口，缺一天就等于那一天在 App 里不存在 ——
+    而这个失败是**静默**的：客户端只会认为「没有更早的了」，用户翻到一半
+    就断，没有任何报错。所以要在更新指针之前拦下来。
+    """
+    from .exporter import ARCHIVE_KEY
+
+    wanted = set(index.get("dates") or [])
+    if not wanted:
+        return []
+    raw = _read_in_commit(st.repo_dir, rev, ARCHIVE_KEY)
+    if not raw:
+        return sorted(wanted)
+    try:
+        doc = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return sorted(wanted)
+    return sorted(wanted - set(doc.get("dates") or []))
+
+
 def head_ok(url: str, *, timeout: float = 15.0, retries: int = 3) -> tuple[bool, str]:
     """探测对象存储上的音频是否真的可访问。
 
@@ -360,7 +382,7 @@ def publish_all(*, db, storage, topics_days: int | None = None, commit_msg: str 
     历史日期的来源，见 exporter 里那个常量的说明）。
     """
     from .config import settings
-    from .exporter import MAX_DAYS_IN_INDEX, export_day, export_index, index_key
+    from .exporter import MAX_DAYS_IN_INDEX, export_archive, export_day, export_index, index_key
     from sqlalchemy import select
     from app.db import Article
 
@@ -421,6 +443,9 @@ def publish_all(*, db, storage, topics_days: int | None = None, commit_msg: str 
 
     # ── ② 根索引引用已提交的按日目录 ────────────────────────────────
     export_index(db, days=topics_days, rev=catalog_rev)
+    # 「加载更多」的历史清单与索引同一次提交发出：两者若不同步，就会出现
+    # 「首屏说还有更多、翻页清单里却没有」的错位。
+    export_archive(db, rev=catalog_rev)
 
     if getattr(st, "provider", "") == "github":
         st.commit(f"{commit_msg}: 索引（链接基于 {catalog_rev[:7]}）")
@@ -449,6 +474,15 @@ def publish_all(*, db, storage, topics_days: int | None = None, commit_msg: str 
         if not v.ok:
             log.error("[publish] 校验未通过，保留旧索引：%s", v.summary())
             result["reason"] = "verify_failed"
+            return result
+
+        # ⑤ 「加载更多」清单必须覆盖索引承诺的每一天：清单短了，用户翻到一半
+        #    就断，而且不会有任何报错（客户端只会认为「没有更早的了」）。
+        gap = _archive_gap(st, index_rev, index)
+        if gap:
+            log.error("[publish] 历史清单缺少索引里的日期 %s，拒绝更新指针", gap)
+            result["ok"] = False
+            result["reason"] = "archive_missing_dates"
             return result
 
         # ── ④ 全部通过，才更新 latest 指针 ──────────────────────────

@@ -1,7 +1,8 @@
 """静态 JSON 导出：让 App 不经服务器也能读内容（CDN 直读）。
 
 产物结构（全部写在存储的data/ 下）：
-    data/index.json              全量索引：每天的概览 + 近期文章列表
+    data/index.json              全量索引：首页概览 + 近期文章列表
+    data/archive.json            历史日期清单（只给「加载更多」用，无正文）
     data/<date>/index.json        某一天的完整列表（按语言等级索引）
     data/versions/<id>.json       单个版本的详情（含逐词时间轴）
 
@@ -55,6 +56,21 @@ MAX_DAYS_IN_INDEX = 14
 # App 经 latest.json 实际拉取的短路径。必须与 data/index.json 保持一致，
 # 否则 App 读到的是历史版本（曾出现短路径停在 @0605a4d 的情况）。
 INDEX_SHORT_KEY = "index.json"
+
+# 「加载更多」专用的历史日期清单（2026-10-29）。
+#
+# 为什么单独一个文件：`index.json` 现在同时干两件事 —— `latest` 是首屏要显示
+# 的那一天，`dates` 是「还能往回翻到哪」。两者诉求不同（一个要**内容**、一个
+# 要**目录**），却共用一个数组，于是服务端为了支持分页，必须把整个保留期都塞进
+# 首屏文件；调整首屏窗口就会顺手改变「能翻多远」。当天改成 14 天时就是这么
+# 撞上的。拆出来之后：index 只管首屏，archive 只管翻页，各自独立演进。
+#
+# 形态是**静态文件而不是带参数的 API**：内容托管在 GitHub + jsDelivr，query
+# 不参与路由（客户端自己就在用 `?t=<stamp>` 做 cache busting，正是它不路由的
+# 证据）。要做 `?before=&limit=` 就得前面挂一个 Worker，为一个纯静态清单付
+# 运行时成本和单点故障，不划算。
+ARCHIVE_KEY = "data/archive.json"
+ARCHIVE_SHORT_KEY = "archive.json"
 
 
 def _audio_meta(v: ArticleVersion, base: str, rev: str = "") -> dict[str, Any] | None:
@@ -388,6 +404,81 @@ def export_index(db: Session, days: int = MAX_DAYS_IN_INDEX, rev: str = "") -> s
     return key
 
 
+def export_archive(db: Session, days: int | None = None, rev: str = "") -> str:
+    """导出「加载更多」专用的历史日期清单（`data/archive.json` + 短路径同名文件）。
+
+    只回答一件事：**保留期内还有哪些日期可以往回翻**，以及还有多少。
+    不含任何正文字段 —— 客户端拿到清单后按日期去取 `data/<date>/index.json`，
+    正文仍然是点进去才下载，一次一篇。
+
+    为什么单独一个文件而不是塞进 `index.json`：见 `ARCHIVE_KEY` 上方的说明。
+    简单说，index 的 `dates` 同时被首屏窗口和分页深度共用，改一个必然动另一个。
+
+    `days` 缺省取仓库保留期（`settings.github_keep_days`）：清单里列一天已被
+    `storage.prune()` 删掉的日期，就是给 App 发一个必然 404 的地址。
+
+    客户端契约：
+      - 点「加载更多」时才拉，一天最多拉一次，可落盘复用；
+      - 用 `oldest` / `dates` 与本地已有日期求差集，不必信任任何页码；
+      - 清单里没有的日期就是**确实没有了**（保留期外），不要再回头试。
+    """
+    keep = int(getattr(settings, "github_keep_days", 0) or 0)
+    want = int(days) if days is not None else (keep or MAX_DAYS_IN_INDEX)
+    if keep > 0 and want > keep:
+        log.warning("[export] archive 天数 %d 超过仓库保留期 %d，按保留期截断", want, keep)
+        want = keep
+    want = max(1, want)
+
+    st = get_storage()
+    base, rev = _cdn_base_with_rev(
+        st, (settings.public_base_url or "").rstrip("/"), rev
+    )
+
+    rows = db.execute(
+        select(Article.published_date)
+        .distinct()
+        .order_by(Article.published_date.desc())
+        .limit(want)
+    ).scalars().all()
+    date_list = [d.isoformat() for d in rows if d]
+
+    # 清单只列**日目录真的在**的日期：库里有一条记录、但导出/提交失败过的那天，
+    # 列进清单就是给 App 一个必然 404 的游标。storage 没有 exists() 时不做过滤
+    # （宁可多列，不要因为探测能力缺失把所有日期都丢掉）。
+    if date_list:
+        try:
+            kept = [d for d in date_list if st.exists(day_index_key(d))]
+            if len(kept) != len(date_list):
+                log.warning("[export] 历史清单剔除 %d 个无日目录的日期：%s",
+                            len(date_list) - len(kept),
+                            sorted(set(date_list) - set(kept)))
+            date_list = kept
+        except Exception as exc:  # noqa: BLE001
+            log.debug("[export] 跳过日目录存在性过滤（%s）", exc)
+
+    payload = {
+        "service": settings.app_name,
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "count": len(date_list),
+        "newest": date_list[0] if date_list else "",
+        "oldest": date_list[-1] if date_list else "",
+        "dates": date_list,
+        "retention_days": keep,
+        "base_url": base or "",
+        "contract": (
+            "只用于「加载更多」：按日期游标切页，不要用页码；"
+            "清单外的日期已过保留期，不会再有。"
+        ),
+    }
+    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    st.put(ARCHIVE_KEY, raw, content_type="application/json; charset=utf-8")
+    if ARCHIVE_SHORT_KEY != ARCHIVE_KEY:
+        st.put(ARCHIVE_SHORT_KEY, raw, content_type="application/json; charset=utf-8")
+    log.info("[export] 历史清单已更新，%d 天（%s ~ %s）",
+             len(date_list), payload["oldest"], payload["newest"])
+    return ARCHIVE_KEY
+
+
 def _all_levels():
     from .levels import ALL_LEVELS
 
@@ -414,7 +505,11 @@ def export_all(db: Session, days: int = 3) -> dict[str, Any]:
         idx = export_index(db)
         # 短路径 content/index.json 已由 export_index 一并写入（App 拉的是这个
         # 路径，只写 data/index.json 会让短路径长期停留在旧版本）。
-        return {"exported": True, "day_keys": day_keys, "index_key": idx}
+        # 历史清单跟着一起刷新：它就是「有哪些日目录」的镜像，只更新索引会让
+        # 清单落后于实际内容（导出单独被调用时尤其明显）。
+        arc = export_archive(db)
+        return {"exported": True, "day_keys": day_keys, "index_key": idx,
+                "archive_key": arc}
     except Exception as exc:  # noqa: BLE001
         log.error("[export] 失败: %s", exc)
         return {"exported": False, "error": str(exc)}
