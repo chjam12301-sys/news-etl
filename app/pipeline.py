@@ -399,19 +399,20 @@ async def warmup_recent(
     return stats
 
 
-def _republish_for_alt(db: Session, label: str, days: int = 3) -> dict[str, Any]:
+def _republish_for_alt(db: Session, label: str, days: int | None = None) -> dict[str, Any]:
     """可选音色发生变化后重发一次 JSON；失败即抛（调用方决定致不致命）。
 
     音频在对象存储、不进 Git，所以只需重发 JSON 就能让 App 拿到新的
     `audio.alternates`。
 
-    `days` 必须覆盖本次改动触及的**全部**发行日：写死 3 的话，回填窗口更靠前
-    的那些天只会被传对象、不会被重导出重发布 —— 用户侧零变化，而 job 照样报成功。
+    `days` 是重导出窗口，缺省取 `exporter.MAX_DAYS_IN_INDEX`（= 索引窗口）：
+    写死 3 的话，回填窗口更靠前的那几天只会被传对象、不会被重导出重发布 ——
+    用户侧零变化，而 job 照样报成功。
     """
-    from .exporter import export_all
+    from .exporter import MAX_DAYS_IN_INDEX, export_all
     from .publish import publish_all
 
-    span = max(1, int(days))
+    span = max(1, int(days if days is not None else MAX_DAYS_IN_INDEX))
     res = export_all(db, days=span)
     if settings.export_json and not res.get("exported"):
         raise RuntimeError(f"{label}: 导出失败（{res.get('error') or '未知'}），拒绝发布陈旧内容")
@@ -523,7 +524,7 @@ async def run_daily(
                             # 否则「详情里没有 alternates」会一直静默到下次常规发布。
                             try:
                                 pub2 = _republish_for_alt(
-                                    db, f"daily {day} article {article.id}: 可选音色", days=3)
+                                    db, f"daily {day} article {article.id}: 可选音色")
                                 totals["alt_publish_ok"] = True
                                 totals["alt_publish_verify"] = pub2.get("verify")
                             except Exception as exc:  # noqa: BLE001
@@ -538,8 +539,7 @@ async def run_daily(
                     alt = await _safe_alt_voices(db, article, with_tts=with_tts)
                     totals["alt_voices"] = alt
                     if alt.get("generated") or alt.get("timeline_uploaded") or alt.get("removed"):
-                        pub = _republish_for_alt(db, f"daily {day} article {article.id}: 可选音色",
-                                                 days=3)
+                        pub = _republish_for_alt(db, f"daily {day} article {article.id}: 可选音色")
                         totals["alt_publish_ok"] = True
                         totals["alt_publish_verify"] = pub.get("verify")
                 job.status = "success"

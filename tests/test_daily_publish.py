@@ -760,3 +760,21 @@ def test_size_gate_prunes_with_repository_retention(monkeypatch, tmp_path):
     result = publish.publish_all(db=None, storage=storage)
     prune.assert_called_once_with(keep_days=settings.github_keep_days)
     assert result["ok"] is False and result["reason"] == "size_exceeded"
+
+
+def test_republish_default_days_follows_index_window():
+    """`scripts/republish.py --days` 的缺省值必须交给 publish_all 取索引窗口。
+
+    这是"修索引"的唯一入口：它若按 3 天发一份索引，就会把刚放开的历史日期
+    又收窄回 3 天，而且症状是"索引看起来正常、只是历史变少了"，很难发现。
+    """
+    tree = ast.parse(Path("scripts/republish.py").read_text(encoding="utf-8"))
+    calls = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "add_argument" and n.args
+        and isinstance(n.args[0], ast.Constant) and n.args[0].value == "--days"
+    ]
+    assert len(calls) == 1
+    default = next(k.value for k in calls[0].keywords if k.arg == "default")
+    assert isinstance(default, ast.Constant) and default.value is None

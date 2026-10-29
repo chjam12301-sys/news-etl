@@ -101,8 +101,9 @@ def repair_release_date(db, fetched_day: dt.date, target_day: dt.date, expected_
 def main() -> int:
     ap = argparse.ArgumentParser(description="重新发布并校验索引")
     ap.add_argument("--dry", action="store_true", help="只校验现状，不改动")
-    ap.add_argument("--days", type=int, default=3,
-                    help="重新导出最近几天的详情 JSON（默认 3；配图/字段结构变更时传 30）")
+    ap.add_argument("--days", type=int, default=None,
+                    help="重新导出最近几天的详情 JSON（缺省 = exporter.MAX_DAYS_IN_INDEX，"
+                         "即索引窗口；配图/字段结构变更时可传 30）")
     ap.add_argument("--repair-fetched-day", type=dt.date.fromisoformat)
     ap.add_argument("--release-date", type=dt.date.fromisoformat)
     ap.add_argument("--expected-ids", help="Exact comma-separated article IDs required for date repair")
@@ -156,6 +157,8 @@ def main() -> int:
     else:
         print("现状有问题，按四阶段重新发布。\n")
 
+    # `--days` 缺省交给 publish_all 取 MAX_DAYS_IN_INDEX：本脚本是"修索引"的
+    # 唯一入口，如果它按 3 天发一份索引，就会把刚放开的历史日期又收窄回去。
     out = publish_all(db=db, storage=st, topics_days=args.days,
                       commit_msg="content: 重新发布（修正链接）")
     print(f"\n发布结果 ok={out.get('ok')}")
