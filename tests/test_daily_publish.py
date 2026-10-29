@@ -931,3 +931,34 @@ def test_prune_keeps_root_catalog_files(tmp_path):
     assert (content / "archive.json").is_file()
     # 对照：真正的历史日目录该被清掉，否则这条测试什么都没证明
     assert not (old_day / "index.json").exists()
+
+
+def test_prune_window_matches_the_indexed_window(tmp_path):
+    """保留窗口必须和索引/清单窗口逐日对齐，不能多留一天。
+
+    旧实现用 `d < today - keep_days` 判过期，边界那天（today - keep_days）
+    仍然算「未过期」，于是盘上留 keep_days + 1 个日历日；而索引和清单只列
+    keep_days 天。多出来的那天客户端永远拿不到（清单里没有它），却继续占
+    jsDelivr 的 50MB 配额 —— 线上实测仓库 15 个日目录、清单 14 天。
+    """
+    from app.storage_github import GitHubStorage
+
+    root = tmp_path / "repo"
+    content = root / "content"
+    versions = content / "data" / "versions"
+    versions.mkdir(parents=True)
+
+    keep = 14
+    oldest_listed = dt.date.today() - dt.timedelta(days=keep - 1)
+    one_more = oldest_listed - dt.timedelta(days=1)
+
+    for day in (oldest_listed, one_more):
+        (versions / f"{day.isoformat()}.json").write_text(
+            json.dumps({"article_id": day.isoformat(), "published_date": day.isoformat()}),
+            encoding="utf-8",
+        )
+
+    GitHubStorage("o/r", local_dir=str(root)).prune(keep_days=keep)
+
+    assert (versions / f"{oldest_listed.isoformat()}.json").is_file(), "窗口内最老一天不能删"
+    assert not (versions / f"{one_more.isoformat()}.json").exists(), "窗口外那天必须删掉"

@@ -347,7 +347,12 @@ class GitHubStorage:
         import datetime as dt
         import json as _json
 
-        cutoff = (dt.date.today() - dt.timedelta(days=keep_days)).isoformat()
+        # 保留窗口要**逐日**对齐索引窗口，否则每天都会留一个孤儿日目录。
+        # 旧写法 cutoff = today - keep_days 把边界那天也算「未过期」，实际留下
+        # keep_days + 1 个日历日；而 export_index / export_archive 只列 keep_days 天，
+        # 于是最早的日目录长期在盘上却从未被任何清单列出 —— 客户端永远拿不到它，
+        # 它却继续占 jsDelivr 那 50MB 配额（线上实测：仓库 15 个日目录、清单 14 天）。
+        cutoff = (dt.date.today() - dt.timedelta(days=max(0, keep_days - 1))).isoformat()
         removed = 0
         freed = 0
 
