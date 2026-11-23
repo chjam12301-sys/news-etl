@@ -171,6 +171,11 @@ async def _process_article(
             db.flush()
 
     for r in results:
+        # 失败/离线降级的内容没有可靠的双语译文，绝不能入库发布。
+        if r.degraded or not r.paragraphs_zh or len(r.paragraphs_zh) != len(r.paragraphs):
+            log.error("[pipe] %s 双语改写未通过校验，跳过发布 article_id=%s",
+                      r.level_code, article.id)
+            continue
         body = r.body
         # 词条原样入库；音标 / 英文释义 / 词性由 App 在运行时直读 R2 词典回填，
         # 生成端不再烘焙（见 app/dict.py 头部说明）。
