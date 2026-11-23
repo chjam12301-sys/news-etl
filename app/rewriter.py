@@ -58,6 +58,7 @@ def _user_prompt(topic: str, title: str, source_text: str, spec: LevelSpec) -> s
         else "Write ENTIRELY in Japanese (日本語). Do not mix in English except for "
         "proper nouns or when quoting a source term."
     )
+    length_unit = "words" if spec.lang == "en" else "Japanese characters (excluding whitespace)"
     return f"""SOURCE TOPIC: {topic}
 SOURCE LANGUAGE: the original report is most likely 简体中文 (Chinese). If so, read it,
 understand what happened, then write your own {lang_name} version — never translate
@@ -75,13 +76,15 @@ Rewrite the news above for level `{spec.code}` ({spec.label}).
 
 LEVEL RULES
 {spec.instruction}
-Target length: about {spec.target_words} words. Sentence style: {spec.sentence_hint}.
+Target length: about {spec.target_words} {length_unit}. Sentence style: {spec.sentence_hint}.
 
 LANGUAGE RULES
 {lang_rule}
 Keep all names, numbers, dates and places accurate to the source.
 Simplify the language, never distort the facts.
-No Chinese characters may appear in `title` / `lead` / `paragraphs`. China-based brands
+For English output, do not use Han characters in `title` / `lead` / `paragraphs`.
+For Japanese output, use natural Japanese kanji and kana; do not copy source Chinese sentences.
+China-based brands
 and products must use their official Latin name — 微信=WeChat, 抖音=Douyin, 小米=Xiaomi,
 米家=Mijia, 华为=Huawei, 荣耀=HONOR, 比亚迪=BYD, 大疆=DJI, 美团=Meituan, 拼多多=Pinduoduo,
 支付宝=Alipay, 淘宝=Taobao, 京东=JD.com, 哔哩哔哩=Bilibili, 小红书=Xiaohongshu (RED),
@@ -93,26 +96,16 @@ and products must use their official Latin name — 微信=WeChat, 抖音=Douyin
 OUTPUT FORMAT — return exactly this JSON shape:
 {{
   "title": "headline rewritten at this level, in {lang_name} (under 90 characters)",
-  "title_zh": "同一标题的中文翻译（口语化，不要直译腔）",
   "lead": "1-3 sentences in {lang_name} that prepare the reader for the article",
-  "lead_zh": "lead 的中文翻译",
   "paragraphs": ["paragraph 1 in {lang_name}", "paragraph 2", "..."],
-  "paragraphs_zh": ["与 paragraphs 一一对应的中文翻译", "..."],
   "vocab": [
     {{"word": "...", "pos": "noun|verb|adj|adv|phrase", "zh": "Chinese gloss", "note": "short usage note in Chinese, may be empty"}}
   ]
 }}
 
-ZH REQUIREMENTS
-- `title_zh` / `lead_zh` / `paragraphs_zh` 必须是**简体中文**。
-- 段落数必须与 `paragraphs` 完全一致，一一对应。
-- 翻译要自然、地道，像中文媒体写出来的，不要逐词硬译。
-- 源文本身就是中文时，不要照搬原报道的标题和措辞：按本篇英文内容重写，
-  让译文和上面的英文逐段对得上。
-
 CONSTRAINTS
-- paragraphs: {spec.para_min} to {spec.para_max} items, each {spec.para_words[0]}-{spec.para_words[1]} words.
-- TOTAL length: about {spec.target_words} words and NEVER more than {spec.max_words}.
+- paragraphs: {spec.para_min} to {spec.para_max} items, each {spec.para_words[0]}-{spec.para_words[1]} {length_unit}.
+- TOTAL length: about {spec.target_words} {length_unit} and NEVER more than {spec.max_words}.
   This is a hard limit — if you have more to say, cut details, do not exceed it.
 - vocab: exactly {spec.vocab_count} items, ordered by how useful they are for this level.
 - Output raw JSON only."""
