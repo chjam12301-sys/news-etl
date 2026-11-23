@@ -633,7 +633,13 @@ async def test_partial_version_recovery_only_rewrites_missing_levels(sessions, m
         received = []
         async def rewrite(topic, title, body, levels, llm):
             received.extend(lv.code for lv in levels)
-            return [offline_rewrite(topic, title, body, lv) for lv in levels]
+            result = [offline_rewrite(topic, title, body, lv) for lv in levels]
+            # 模拟通过校验的双语结果，不能拿无译文离线产物冒充成功。
+            for r in result:
+                r.title_zh = "标题"
+                r.lead_zh = "导读"
+                r.paragraphs_zh = ["中文译文。"] * len(r.paragraphs)
+            return result
         monkeypatch.setattr(pipeline, "rewrite_all", rewrite)
         monkeypatch.setattr(pipeline, "get_llm", lambda: None)
         stats = await pipeline._process_article(db, article, False, False)
@@ -642,6 +648,27 @@ async def test_partial_version_recovery_only_rewrites_missing_levels(sessions, m
         assert len(received) == 9
         assert stats["versions"] == 9
         assert db.scalar(select(ArticleVersion.id).where(ArticleVersion.level_code == "en_a1")) == original_id
+
+
+@pytest.mark.asyncio
+async def test_rewrite_failure_does_not_publish_partial_versions(sessions, monkeypatch):
+    from app.rewriter import offline_rewrite
+    with sessions() as db:
+        article = add_article(db)
+        article.image_provider = "unsplash"
+        article.image_url = "https://example.test/image"
+        add_versions(db, article, {"en_a1"})
+        async def rewrite(topic, title, body, levels, llm):
+            # 旧逻辑会把无译文产物保存并标记 done；现在应当拒绝。
+            return [offline_rewrite(topic, title, body, lv) for lv in levels]
+        monkeypatch.setattr(pipeline, "rewrite_all", rewrite)
+        monkeypatch.setattr(pipeline, "get_llm", lambda: None)
+        with pytest.raises(RuntimeError, match="no-silent-rewrite"):
+            await pipeline._process_article(db, article, False, False)
+        db.rollback()
+        assert len(list(db.scalars(select(ArticleVersion).where(
+            ArticleVersion.article_id == article.id)))) == 1
+        assert article.rewrite_status != "done"
 
 
 def test_concurrent_reservation_creates_one_article(tmp_path):

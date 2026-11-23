@@ -154,6 +154,17 @@ async def _process_article(
     ) if missing else []
     log.info("[pipe] 改写完成 %d 个等级，用时 %.1fs", len(results), time.time() - t0)
 
+    # 任一待生成等级失败，整篇停止发布；不能只跳过错误等级后将文章标记 done。
+    failed_levels = [
+        r.level_code for r in results
+        if r.degraded or not r.paragraphs_zh or len(r.paragraphs_zh) != len(r.paragraphs)
+    ]
+    if failed_levels:
+        raise RuntimeError(
+            "[no-silent-rewrite] 双语改写不完整，拒绝发布："
+            + ", ".join(failed_levels)
+        )
+
     # 源文换成中文以后，中文标题里基本抽不出英文检索词（keywords_from_title 只认
     # 拉丁词），第一次配图大多只能落到渐变占位。改写完已经有英文标题了，用它补配一次。
     # 仍然以标题实词为准，不引入「technology computer」这类泛词兜底。
@@ -171,6 +182,11 @@ async def _process_article(
             db.flush()
 
     for r in results:
+        # 失败/离线降级的内容没有可靠的双语译文，绝不能入库发布。
+        if r.degraded or not r.paragraphs_zh or len(r.paragraphs_zh) != len(r.paragraphs):
+            log.error("[pipe] %s 双语改写未通过校验，跳过发布 article_id=%s",
+                      r.level_code, article.id)
+            continue
         body = r.body
         # 词条原样入库；音标 / 英文释义 / 词性由 App 在运行时直读 R2 词典回填，
         # 生成端不再烘焙（见 app/dict.py 头部说明）。
