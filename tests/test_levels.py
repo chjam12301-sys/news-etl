@@ -1,14 +1,14 @@
 """等级规格与字数硬上限。
 
 起因：A1 目标写的是 110 词，实测产出 116~230 词 —— 入门级比 B1 还长。
-现在每段给区间 + 全局硬上限，并由 rewriter 强制裁剪。
+现在每段给区间 + 全局硬上限；rewriter 只验证长度，不再裁剪。
 """
 from __future__ import annotations
 
 import pytest
 
 from app.levels import ALL_LEVELS, LEVEL_BY_CODE
-from app.rewriter import _trim_to_limit, _word_count
+from app.rewriter import _valid_length
 
 
 class TestLevelSpec:
@@ -39,34 +39,32 @@ class TestLevelSpec:
             assert targets == sorted(targets), targets
 
 
-class TestTrimToLimit:
+class TestLengthValidation:
     @pytest.mark.parametrize(
         "code,paras",
         [
-            ("en_a1", ["This is one very long sentence that just keeps going and going "
-                       "without any punctuation to break it up at all " * 5]),
+            ("en_a1", ["This sentence has far too many words for a beginner. " * 30] * 3),
             ("en_a1", [" ".join(f"word{i}" for i in range(30)) + "." for _ in range(4)]),
-            ("ja_n5", ["これは長い文章です。" * 30]),
+            ("ja_n5", ["これは長い文章です。" * 30] * 3),
             ("ja_n1", ["これは長い文章です。" * 40 for _ in range(4)]),
         ],
     )
-    def test_never_exceeds_hard_cap(self, code, paras):
+    def test_overlong_is_rejected_not_truncated(self, code, paras):
         spec = LEVEL_BY_CODE[code]
-        out, _zh = _trim_to_limit(list(paras), [], spec)
-        total = sum(_word_count(p, spec.lang) for p in out)
-        assert total <= spec.max_words, f"{code}: {total} > {spec.max_words}"
-        assert out, "不能裁成空文"
+        original = list(paras)
+        assert not _valid_length(paras, spec)
+        assert paras == original, "validation must not alter text"
 
-    def test_short_enough_is_untouched(self):
-        spec = LEVEL_BY_CODE["en_a1"]
-        paras = ["Short one.", "Short two.", "Short three."]
-        out, _ = _trim_to_limit(list(paras), [], spec)
-        assert out == paras
+    @pytest.mark.parametrize("code,paras", [
+        ("en_a1", ["Short one.", "Short two.", "Short three."]),
+        ("ja_n5", ["今日は晴れです。", "学校に行きます。", "本を読みます。"]),
+    ])
+    def test_valid_text_is_accepted_unchanged(self, code, paras):
+        assert _valid_length(paras, LEVEL_BY_CODE[code])
+        assert paras
 
-    def test_chinese_paragraphs_stay_aligned(self):
-        """中译必须与正文段落一一对应，裁剪时同步裁。"""
+    def test_too_few_or_too_many_paragraphs_rejected(self):
         spec = LEVEL_BY_CODE["en_a1"]
-        paras = [" ".join(f"word{i}" for i in range(30)) + "." for _ in range(5)]
-        zh = [f"第{i}段" for i in range(5)]
-        out, out_zh = _trim_to_limit(paras, zh, spec)
-        assert len(out) == len(out_zh)
+        assert not _valid_length(["Short one."], spec)
+        assert not _valid_length(["Short."] * (spec.para_max + 1), spec)
+        assert not _valid_length([], spec)
