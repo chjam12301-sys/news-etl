@@ -81,3 +81,45 @@ async def test_translation_mismatch_is_degraded():
     result = await rewrite_article("topic", "title", "source", spec, llm)
     assert result.degraded
     assert len(llm.prompts) == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["ja_n2", "ja_n3"])
+async def test_japanese_actual_overshoot_gets_measured_budget(code):
+    """Reproduce production failure mode: N2/N3 need two full rewrites."""
+    spec = LEVEL_BY_CODE[code]
+    oversized = ["日本語の長い説明です。" * 30] * 4
+    still_long = ["国内の会社が発表しました。" * 30] * 4
+    final = ["会社は新しい技術を発表しました。生活に役立つ予定です。"] * 4
+    llm = FakeLLM([
+        draft(oversized),
+        draft(still_long),
+        draft(final),
+        translated(["公司发布了新技术，将用于改善生活。"] * 4),
+    ])
+    result = await rewrite_article("tech", "title", "source", spec, llm)
+    assert not result.degraded
+    assert result.paragraphs == final
+    assert len(llm.prompts) == 4
+    assert "REVISION REQUIRED" in llm.prompts[1]
+    measured = sum(_word_count(p, spec.lang) for p in oversized)
+    assert f"{measured} Japanese characters" in llm.prompts[1]
+    assert "EXACTLY 4 paragraphs" in llm.prompts[1]
+    safe_total = min(spec.target_words, int(spec.max_words * 0.80))
+    assert f"no more than {safe_total} Japanese characters" in llm.prompts[1]
+    assert "REVISION REQUIRED" in llm.prompts[2]
+    assert sum(_word_count(p, spec.lang) for p in result.paragraphs) <= spec.max_words
+
+
+@pytest.mark.asyncio
+async def test_english_revision_receives_word_count():
+    spec = LEVEL_BY_CODE["en_b2"]
+    llm = FakeLLM([
+        draft(["word " * 100] * 3),
+        draft(["A coherent short news report."] * 3),
+        translated(["一篇完整的简短新闻报道。"] * 3),
+    ])
+    result = await rewrite_article("tech", "title", "source", spec, llm)
+    assert not result.degraded
+    assert "300 English words" in llm.prompts[1]
+    assert "do not include Chinese translations" in llm.prompts[1]

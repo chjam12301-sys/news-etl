@@ -479,16 +479,31 @@ def _valid_length(paragraphs: list[str], spec: LevelSpec) -> bool:
 
 
 def _revision_prompt(original: str, paragraphs: list[str], spec: LevelSpec) -> str:
-    unit = "Japanese characters excluding whitespace" if spec.lang == "ja" else "English words"
+    """把实测超限量反馈给 LLM，用更保守的预算重写整篇文章。"""
+    unit = "Japanese characters (including punctuation, excluding whitespace)" if spec.lang == "ja" else "English words"
+    actual = sum(_word_count(p, spec.lang) for p in paragraphs)
+    # 模型尤其难以准确计算日语字数；故留足余量，不要求卡着硬上限。
+    safe_total = min(spec.target_words, int(spec.max_words * 0.80))
+    average_para = (spec.para_words[0] + spec.para_words[1]) / 2
+    num_paras = max(spec.para_min, min(spec.para_max, round(safe_total / average_para)))
+    per_para = safe_total // num_paras
     return (
         original
-        + "\n\nREVISION REQUIRED: the last draft exceeded the hard length limit "
-        "or violated the paragraph count. Rewrite the entire article, including "
-        "a coherent ending. Do not mechanically delete sentences. "
-        f"Use {spec.para_min}-{spec.para_max} paragraphs and at most "
-        f"{spec.max_words} {unit} across paragraphs. "
-        "Keep all important facts accurate. Return complete JSON. "
-        "Previous draft: "
+        + "\n\nREVISION REQUIRED. The prior draft has "
+        + f"{actual} {unit} in {len(paragraphs)} paragraphs; "
+        + f"the hard limit is {spec.max_words} {unit} and the allowed paragraph "
+        + f"count is {spec.para_min}-{spec.para_max}. "
+        + "Do NOT just remove the last sentence. Write a NEW shorter, "
+        + "coherent news article with an ending and the most important facts. "
+        + f"Aim for EXACTLY {num_paras} paragraphs, each under {per_para} {unit}, "
+        + f"and no more than {safe_total} {unit} TOTAL across all paragraphs. "
+        + "This is a deliberately conservative working budget; it takes priority "
+        + "over the initial approximate length target. "
+        + "For Japanese count every kanji, kana, Latin letter, digit and "
+        + "punctuation mark as one character. "
+        + "Output the full requested JSON with source-language paragraphs only; "
+        + "do not include Chinese translations. Return valid JSON. "
+        + "Previous draft: "
         + json.dumps(paragraphs, ensure_ascii=False)
     )
 
@@ -537,8 +552,12 @@ async def rewrite_article(
             if _valid_length(paragraphs, spec):
                 data = candidate
                 break
-            log.warning("[llm] %s 第 %d/%d 次正文长度或段数不合格",
-                        spec.code, attempt, _MAX_ATTEMPTS)
+            total = sum(_word_count(p, spec.lang) for p in paragraphs)
+            log.warning(
+                "[llm] %s 第 %d/%d 次不合格：正文 %d/%d，段落 %d（要求 %d-%d）",
+                spec.code, attempt, _MAX_ATTEMPTS, total, spec.max_words,
+                len(paragraphs), spec.para_min, spec.para_max,
+            )
             prompt = _revision_prompt(user, paragraphs, spec)
         except Exception as exc:  # noqa: BLE001
             log.warning("[llm] %s 第 %d/%d 次生成失败: %s",
