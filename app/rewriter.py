@@ -16,7 +16,7 @@ from .levels import LevelSpec
 log = logging.getLogger(__name__)
 
 # LLM 单次改写的最大尝试次数（JSON 格式错误属偶发，重试即可）
-_MAX_ATTEMPTS = 2
+_MAX_ATTEMPTS = 3
 
 
 @dataclass(slots=True)
@@ -477,70 +477,27 @@ def _word_count(text: str, lang: str) -> int:
     return len(re.findall(r"[A-Za-z0-9']+", text))
 
 
-def _split_sentences(text: str, lang: str) -> list[str]:
-    sep = r"(?<=[。！？])" if lang == "ja" else r"(?<=[.!?])\s+"
-    return [s.strip() for s in re.split(sep, text) if s.strip()]
+def _valid_length(paragraphs: list[str], spec: LevelSpec) -> bool:
+    """校验最终正文，不机械修改文本。"""
+    return (
+        spec.para_min <= len(paragraphs) <= spec.para_max
+        and sum(_word_count(p, spec.lang) for p in paragraphs) <= spec.max_words
+    )
 
 
-def _trim_to_limit(
-    paragraphs: list[str], zh_paras: list[str], spec: LevelSpec
-) -> tuple[list[str], list[str]]:
-    """把正文逐句裁到 spec.max_words 以内，中译同步裁。
-
-    为什么必须裁：只靠 prompt 写「about N words」没用 —— 实测 A1 产出
-    116~230 词。裁的时候按整句删，避免留下半句话；至少保留 para_min 段。
-    """
-    joiner = "" if spec.lang == "ja" else " "
-    limit = spec.max_words
-    before = sum(_word_count(p, spec.lang) for p in paragraphs)
-    if before <= limit:
-        return paragraphs, zh_paras
-
-    # 扁平化成带段落号的句子，从尾部逐句删 —— 只裁最后一段是裁不动的
-    per = [_split_sentences(p, spec.lang) or [p] for p in paragraphs]
-    flat = [(i, s) for i, ss in enumerate(per) for s in ss]
-    min_paras = min(spec.para_min, len(per))
-
-    # 优先「段落数够 + 不超长」；若做不到，则退而求其次「不超长 + 至少 1 段」
-    # —— 长度是硬指标，段数只是版式偏好。
-    best: list[str] | None = None
-    loose: list[str] | None = None
-    while flat:
-        flat.pop()
-        groups: dict[int, list[str]] = {}
-        for i, s in flat:
-            groups.setdefault(i, []).append(s)
-        rebuilt = [joiner.join(groups[i]) for i in sorted(groups) if groups[i]]
-        if not rebuilt:
-            break
-        if sum(_word_count(p, spec.lang) for p in rebuilt) > limit:
-            continue
-        if len(rebuilt) >= min_paras:
-            best = rebuilt
-            break
-        if loose is None:
-            loose = rebuilt
-
-    best = best or loose
-    if best is None:
-        best = list(paragraphs)
-
-    # 兜底：没有句读可依（整段一个长句）时按词/字硬截，保证不破硬上限
-    over = sum(_word_count(p, spec.lang) for p in best) - limit
-    if over > 0:
-        rest = sum(_word_count(p, spec.lang) for p in best[:-1])
-        room = max(limit - rest, 1)
-        last = best[-1]
-        if spec.lang == "ja":
-            best[-1] = "".join([c for c in last if not c.isspace()][:room])
-        else:
-            best[-1] = " ".join(re.findall(r"[A-Za-z0-9']+", last)[:room])
-
-    log.info("[llm] %s 超长已裁剪：%d → %d 词（段 %d → %d，上限 %d）",
-             spec.code, before,
-             sum(_word_count(p, spec.lang) for p in best),
-             len(paragraphs), len(best), limit)
-    return best, zh_paras[: len(best)] if zh_paras else []
+def _revision_prompt(original: str, paragraphs: list[str], spec: LevelSpec) -> str:
+    unit = "Japanese characters excluding whitespace" if spec.lang == "ja" else "English words"
+    return (
+        original
+        + "\n\nREVISION REQUIRED: the last draft exceeded the hard length limit "
+        "or violated the paragraph count. Rewrite the entire article, including "
+        "a coherent ending. Do not mechanically delete sentences. "
+        f"Use {spec.para_min}-{spec.para_max} paragraphs and at most "
+        f"{spec.max_words} {unit} across paragraphs. "
+        "Keep all important facts accurate. Return complete JSON. "
+        "Previous draft: "
+        + json.dumps(paragraphs, ensure_ascii=False)
+    )
 
 
 def _pick_vocab_words(text: str, lang: str, limit: int) -> list[str]:
@@ -576,74 +533,64 @@ async def rewrite_article(
         return _degraded(topic, title, source, spec)
 
     user = _user_prompt(topic, title, source, spec)
-
-    # LLM 返回的 JSON 偶发格式错误（未转义引号、截断），重试一次通常就好。
-    # 之前是失败即降级 —— 会静默产出「无译文」的内容，App 侧无法感知。
+    prompt = user
     data: dict[str, Any] | None = None
-    last_exc: Exception | None = None
+
+    # 第一阶段：让模型生成合格正文；失败时让模型完整重写。
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         try:
-            raw = await llm.complete(SYSTEM_PROMPT, user)
-            data = parse_json_loose(raw)
-            if _as_list(data.get("paragraphs")):
+            candidate = parse_json_loose(await llm.complete(SYSTEM_PROMPT, prompt))
+            paragraphs = _as_list(candidate.get("paragraphs"))
+            if _valid_length(paragraphs, spec):
+                data = candidate
                 break
-            last_exc = ValueError("返回空正文")
+            log.warning("[llm] %s 第 %d/%d 次正文长度或段数不合格",
+                        spec.code, attempt, _MAX_ATTEMPTS)
+            prompt = _revision_prompt(user, paragraphs, spec)
         except Exception as exc:  # noqa: BLE001
-            last_exc = exc
-            log.warning("[llm] %s 第 %d/%d 次解析失败: %s",
+            log.warning("[llm] %s 第 %d/%d 次生成失败: %s",
                         spec.code, attempt, _MAX_ATTEMPTS, exc)
-            data = None
-        if attempt < _MAX_ATTEMPTS:
-            await asyncio.sleep(1.5 * attempt)
 
     if data is None:
-        log.warning("[llm] %s 改写最终失败(%s)，降级离线", llm.name, last_exc, spec.code)
         return _degraded(topic, title, source, spec)
 
-    paragraphs = _as_list(data.get("paragraphs"))[:8]
-    if not paragraphs:
-        log.warning("[llm] %s 返回空正文，降级离线", spec.code)
-        return _degraded(topic, title, source, spec)
-
+    paragraphs = _as_list(data["paragraphs"])
     title_out = str(data.get("title") or title).strip()[:120]
+    lead = str(data.get("lead") or "").strip()[:400]
 
-    # 中文翻译：段落数必须与原文一致，否则丢弃（宁可没有也不要错位）
-    zh_paras = _as_list(data.get("paragraphs_zh"))[:len(paragraphs)]
-    if len(zh_paras) != len(paragraphs):
-        log.warning("[llm] %s 中译段落数不符(%d vs %d)，丢弃中文字段",
-                    spec.code, len(zh_paras), len(paragraphs))
-        zh_paras = []
-        # 再试一次：段数不符常因正文尾部被截断，重试能拿到完整的两份
-        if _MAX_ATTEMPTS > 1:
-            try:
-                raw2 = await llm.complete(SYSTEM_PROMPT, user)
-                d2 = parse_json_loose(raw2)
-                p2 = _as_list(d2.get("paragraphs"))[:8]
-                z2 = _as_list(d2.get("paragraphs_zh"))[:len(p2)]
-                if p2 and len(z2) == len(p2) and d2.get("title_zh"):
-                    log.info("[llm] %s 重试成功，译文已对齐", spec.code)
-                    paragraphs, zh_paras = p2, z2
-                    data = d2
-            except Exception as exc:  # noqa: BLE001
-                log.warning("[llm] %s 重试仍失败: %s", spec.code, exc)
-
-    # 硬上限裁剪：模型几乎总超出目标（A1 实测 116~230 词，而目标只有 110）。
-    # 逐句裁到上限内，中译同步裁，保证段落仍一一对应。
-    paragraphs, zh_paras = _trim_to_limit(paragraphs, zh_paras, spec)
-
-    return RewriteResult(
-        level_code=spec.code,
-        lang=spec.lang,
-        level=spec.level,
-        level_label=spec.label,
-        title=title_out,
-        paragraphs=paragraphs,
-        vocab=_as_vocab(data.get("vocab"), spec.lang, spec.vocab_count),
-        lead=str(data.get("lead") or "").strip()[:400],
-        title_zh=str(data.get("title_zh") or "").strip()[:120],
-        lead_zh=str(data.get("lead_zh") or "").strip()[:400],
-        paragraphs_zh=zh_paras,
+    # 第二阶段：仅根据定稿正文生成中文，防止译文保留已删除的信息。
+    translation_prompt = (
+        "Translate ONLY the following final graded article into natural Simplified Chinese. "
+        "Do not add any facts, numbers, explanations, or sentences. "
+        "Return a JSON object containing title_zh, lead_zh and paragraphs_zh. "
+        "Each Chinese paragraph must correspond to exactly one source paragraph. "
+        "Do not rewrite the source-language article.\n"
+        + json.dumps({"title": title_out, "lead": lead, "paragraphs": paragraphs},
+                     ensure_ascii=False)
     )
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            translated = parse_json_loose(
+                await llm.complete(SYSTEM_PROMPT, translation_prompt)
+            )
+            zh_paras = _as_list(translated.get("paragraphs_zh"))
+            title_zh = str(translated.get("title_zh") or "").strip()
+            lead_zh = str(translated.get("lead_zh") or "").strip()
+            if (len(zh_paras) == len(paragraphs) and title_zh
+                    and (not lead or lead_zh)):
+                return RewriteResult(
+                    level_code=spec.code, lang=spec.lang, level=spec.level,
+                    level_label=spec.label, title=title_out, paragraphs=paragraphs,
+                    vocab=_as_vocab(data.get("vocab"), spec.lang, spec.vocab_count),
+                    lead=lead, title_zh=title_zh[:120], lead_zh=lead_zh[:400],
+                    paragraphs_zh=zh_paras,
+                )
+            raise ValueError("中文译文缺失或段落数量不匹配")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[llm] %s 第 %d/%d 次翻译失败: %s",
+                        spec.code, attempt, _MAX_ATTEMPTS, exc)
+
+    return _degraded(topic, title, source, spec)
 
 
 async def rewrite_all(
@@ -665,7 +612,7 @@ async def rewrite_all(
     for spec, res in zip(specs, results):
         if isinstance(res, BaseException):
             log.warning("[llm] %s 异常: %s", spec.code, res)
-            out.append(offline_rewrite(topic, title, text, spec))
+            out.append(_degraded(topic, title, text, spec))
         else:
             out.append(res)
     return out
