@@ -123,3 +123,42 @@ async def test_english_revision_receives_word_count():
     assert not result.degraded
     assert "300 English words" in llm.prompts[1]
     assert "do not include Chinese translations" in llm.prompts[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "code,first_lengths,second_lengths,hard_cap,budgets",
+    [
+        ("ja_n1", [123, 123, 122, 122, 122], [118, 118, 117, 117], 390, (312, 253)),
+        ("ja_n2", [79, 79, 78, 78, 78], None, 320, (256, 208)),
+    ],
+)
+async def test_production_japanese_retry_has_one_budget(
+    code, first_lengths, second_lengths, hard_cap, budgets,
+):
+    spec = LEVEL_BY_CODE[code]
+    first = ["旧" * size for size in first_lengths]
+    second = ["案" * size for size in second_lengths] if second_lengths else None
+    final = ["会社が新製品を発表した。", "発売日は来月だ。", "価格は未定だ。"]
+
+    class ProductionLLM(FakeLLM):
+        async def complete(self, system, user, *, max_tokens=2400):
+            reply = await super().complete(system, user, max_tokens=max_tokens)
+            return '{"paragraphs": ["文" "章"]}' if reply == "null" else reply
+
+    llm = ProductionLLM([
+        draft(first),
+        draft(second) if second is not None else None,
+        draft(final),
+        translated(["公司发布了新产品。", "下个月发售。", "价格尚未确定。"]),
+    ])
+    result = await rewrite_article("tech", "title", "source", spec, llm)
+
+    assert not result.degraded
+    assert result.paragraphs == final
+    assert spec.max_words == hard_cap
+    assert json.loads(llm.prompts[3].splitlines()[-1])["paragraphs"] == final
+    for prompt, budget in zip(llm.prompts[1:3], budgets):
+        assert f"NEVER more than {budget}." in prompt
+        assert f"about {spec.target_words} Japanese characters" not in prompt
+        assert "旧旧" not in prompt and "案案" not in prompt
