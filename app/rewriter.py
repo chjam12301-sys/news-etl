@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import httpx
@@ -58,7 +58,10 @@ def _user_prompt(topic: str, title: str, source_text: str, spec: LevelSpec) -> s
         else "Write ENTIRELY in Japanese (日本語). Do not mix in English except for "
         "proper nouns or when quoting a source term."
     )
-    length_unit = "words" if spec.lang == "en" else "Japanese characters (excluding whitespace)"
+    length_unit = (
+        "words" if spec.lang == "en"
+        else "Japanese characters (including punctuation, excluding whitespace)"
+    )
     return f"""SOURCE TOPIC: {topic}
 SOURCE LANGUAGE: the original report is most likely 简体中文 (Chinese). If so, read it,
 understand what happened, then write your own {lang_name} version — never translate
@@ -478,6 +481,29 @@ def _valid_length(paragraphs: list[str], spec: LevelSpec) -> bool:
     )
 
 
+def _japanese_revision_prompt(
+    topic: str, title: str, source: str, spec: LevelSpec,
+    paragraphs: list[str], attempt: int,
+) -> str:
+    # Rebuild the prompt with one length budget and leave more room on the final try.
+    budget_percent = 80 if attempt == 1 else 65
+    budget = min(spec.target_words, spec.max_words * budget_percent // 100)
+    average_para = sum(spec.para_words) / 2
+    count = max(spec.para_min, min(spec.para_max, round(budget / average_para)))
+    retry_spec = replace(
+        spec, target_words=budget, hard_max_words=budget,
+        para_min=count, para_max=count, para_words=(1, budget // count),
+    )
+    actual = sum(_word_count(p, spec.lang) for p in paragraphs)
+    return _user_prompt(topic, title, source, retry_spec) + (
+        f"\n\nREVISION REQUIRED. The prior draft had {actual} Japanese characters. "
+        f"Write a new complete article in EXACTLY {count} paragraphs with no more than "
+        f"{budget} Japanese characters in total. Count each kanji, kana, Latin letter, "
+        "digit and punctuation mark as one character. Keep the core news event and a "
+        "complete ending. Omit secondary facts and background. Return valid JSON."
+    )
+
+
 def _revision_prompt(original: str, paragraphs: list[str], spec: LevelSpec) -> str:
     """把实测超限量反馈给 LLM，用更保守的预算重写整篇文章。"""
     unit = "Japanese characters (including punctuation, excluding whitespace)" if spec.lang == "ja" else "English words"
@@ -543,9 +569,14 @@ async def rewrite_article(
     user = _user_prompt(topic, title, source, spec)
     prompt = user
     data: dict[str, Any] | None = None
+    rejected_paragraphs: list[str] | None = None
 
     # 第一阶段：让模型生成合格正文；失败时让模型完整重写。
     for attempt in range(1, _MAX_ATTEMPTS + 1):
+        if spec.lang == "ja" and rejected_paragraphs is not None:
+            prompt = _japanese_revision_prompt(
+                topic, title, source, spec, rejected_paragraphs, attempt - 1,
+            )
         try:
             candidate = parse_json_loose(await llm.complete(SYSTEM_PROMPT, prompt))
             paragraphs = _as_list(candidate.get("paragraphs"))
@@ -558,7 +589,9 @@ async def rewrite_article(
                 spec.code, attempt, _MAX_ATTEMPTS, total, spec.max_words,
                 len(paragraphs), spec.para_min, spec.para_max,
             )
-            prompt = _revision_prompt(user, paragraphs, spec)
+            rejected_paragraphs = paragraphs
+            if spec.lang != "ja" and attempt < _MAX_ATTEMPTS:
+                prompt = _revision_prompt(user, paragraphs, spec)
         except Exception as exc:  # noqa: BLE001
             log.warning("[llm] %s 第 %d/%d 次生成失败: %s",
                         spec.code, attempt, _MAX_ATTEMPTS, exc)
